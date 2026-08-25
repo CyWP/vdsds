@@ -1,0 +1,88 @@
+#App files
+*.vd3d
+*.vd3dm
+#images
+*.png
+*.jpg
+*.jpeg
+*.webp
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+
+#Personal backups
+*.bak
+
+# Environment files
+*.env
+*.yaml.bak
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs and debug files
+*.log
+*.out
+*.err
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Data files
+*.csv
+*.tsv
+*.json
+*.xls
+*.xlsx
+*.h5
+*.pickle
+*.pkl
+
+# Model files
+*.pt
+*.pth
+*.onnx
+*.joblib
+models/
+
+# Images and media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+!assets/*.gif
+
+# 3D object files
+*.ply
+*.obj
+*.stl
+*.fbx
+*.glb
+
+# Cache files
+*.cache
+*.mmap
+__pycache__/
+
+# Pip and Conda
+pip-log.txt
+pip-delete-this-directory.txt
+conda-meta/
+
+# Build files
+build/
+dist/
+*.egg-info/
+*.egg

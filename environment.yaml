@@ -1,0 +1,26 @@
+name: vdsds
+channels:
+- pytorch
+- nvidia
+- conda-forge
+- defaults
+dependencies:
+- python=3.11
+- pip
+- pip:
+  - numpy<2.2
+  - torch --index-url https://download.pytorch.org/whl/cu124
+  - torchvision --index-url https://download.pytorch.org/whl/cu124
+  - gpytoolbox
+  - jaxtyping
+  - ninja
+  - rich
+  - gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
+  - pillow
+  - triangle
+  - plyfile
+  - libigl == 2.4.1
+  - transformers<=4.49
+  - diffusers<=0.32
+  - easydict
+  - PySide6
