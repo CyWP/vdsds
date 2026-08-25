@@ -21,7 +21,7 @@ class ObjViewer:
         self.roll_x: int = 0
         self.roll_y: int = 0
 
-    @torch.no_grad
+    @torch.no_grad()
     def get_render(self, H: int, W: int) -> Float[Tensor, "B 4 H W"]:
         if H != self.camera.H or W != self.camera.W:
             self.camera.set_window_size(H, W)
@@ -80,17 +80,10 @@ class ObjViewer:
             self.rot_y += y
 
     def left_click(self, x: int, y: int, keys: List[int]):
-        models = self.last_models
-        model_map = self.last_model_map
-        idx = model_map[y, x].item()
-        scene = self.scene
-        if idx < 0:
-            scene.deselect_all()
-            return
-        model = models[idx]
-        if K_SHIFT not in keys:
-            scene.deselect_all()
-        scene.select_model(model.get_name())
+        pass
+
+    def right_click(self, x: int, y: int, keys: List[int]):
+        pass
 
     def scroll(self, x: int, keys: List[int] = None):
         self.camera.translate_depth(x / 1000)

@@ -1,4 +1,24 @@
+from typing import Set
+
 from PySide6.QtGui import Qt
+
+
+class KeyHandler(set):
+    def __init__(self):
+        super().__init__()
+
+    def pressed(self, key: int):
+        self.add(key)
+
+    def released(self, key: int):
+        self.discard(key)
+
+    def get(self) -> Set[int]:
+        return self
+
+    def copy(self) -> Set[int]:
+        return set(self)
+
 
 # MOUSE
 MOUSE_LEFT = Qt.LeftButton

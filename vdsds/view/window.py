@@ -19,6 +19,10 @@ class AppView(QObject):
         self.window.setWindowTitle("VDSDS")
         self.window.show()
 
+    @property
+    def dimensions(self) -> Tuple[int, int]:
+        return self.window.viewport.get_dimensions()
+
     def update(self, img: np.ndarray):
         """
         Update the viewport with a new image.
@@ -31,6 +35,7 @@ class AppView(QObject):
 class MainWindow(QMainWindow):
     key_pressed = Signal(int)
     key_released = Signal(int)
+    closed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -67,6 +72,10 @@ class MainWindow(QMainWindow):
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         self.key_released.emit(event.key())
         super().keyReleaseEvent(event)
+
+    def closeEvent(self, event):
+        self.closed.emit()
+        event.accept()
 
 
 class Viewport(QLabel):
