@@ -62,6 +62,17 @@ class Splat(Model):
             sh_degree=data["sh_degree"],
         )
 
+    @classmethod
+    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Splat:
+        return cls(
+            means=state_dict["means"],
+            quats=state_dict["quats"],
+            scales=state_dict["scales"],
+            opacities=state_dict["opacities"],
+            colors=state_dict["colors"],
+            sh_degree=int(state_dict["sh_degree"]),
+        )
+
     @staticmethod
     def combine(splats: Sequence[Splat]) -> Splat:
         if len(splats) == 0:

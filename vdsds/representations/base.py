@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from jaxtyping import Float
 from torch import Tensor
-from typing import List
+from typing import Dict, List, Type
 
 from ..utils.camera import Camera
 
@@ -24,9 +24,35 @@ class Model(nn.Module):
 
     def register_parameter(self, name: str, value: Tensor | nn.Parameter) -> None:
         if isinstance(value, nn.Parameter):
-            setattr(self, name, value)
+            super().register_parameter(name, value)
         else:
             super().register_parameter(name, nn.Parameter(value))
+
+    @classmethod
+    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Model:
+        direct_params = {}
+        submodule_dicts: Dict[str, Dict[str, Tensor]] = {}
+
+        for key, value in state_dict.items():
+            if "." in key:
+                prefix, rest = key.split(".", 1)
+                submodule_dicts.setdefault(prefix, {})[rest] = value
+            else:
+                direct_params[key] = value
+
+        submodules = {}
+        for name, sub_dict in submodule_dicts.items():
+            sub_cls = cls._get_submodule_type(name)
+            submodules[name] = sub_cls.from_state_dict(sub_dict)
+
+        return cls(**direct_params, **submodules)
+
+    @classmethod
+    def _get_submodule_type(cls, name: str) -> Type[Model]:
+        hints = cls.__init__.__annotations__
+        if name in hints:
+            return hints[name]
+        raise ValueError(f"Cannot determine type for submodule '{name}' in {cls.__name__}")
 
     def combine(self, models: List[Model]) -> Model:
         raise NotImplementedError()

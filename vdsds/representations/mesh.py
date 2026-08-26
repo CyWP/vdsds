@@ -21,6 +21,10 @@ class Mesh(Model):
         self.register_parameter("V", V)
         self.register_buffer("F", F)
 
+    @classmethod
+    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Mesh:
+        return cls(V=state_dict["V"], F=state_dict["F"])
+
     def copy(self) -> Mesh:
         return Mesh(
             V=self.V.clone(),

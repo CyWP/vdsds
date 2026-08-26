@@ -1,7 +1,7 @@
 from __future__ import annotations
 import torch
 
-from typing import Tuple, Optional
+from typing import Dict, Tuple, Optional
 from torch import Tensor
 from jaxtyping import Float, Int, Bool
 
@@ -40,6 +40,29 @@ class SplatMesh(Model):
         self.show_mesh = show_mesh
         self.register_buffer("splat_height", torch.tensor(splat_height))
 
+    @classmethod
+    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> SplatMesh:
+        mesh_keys = {}
+        direct_keys = {}
+        for key, value in state_dict.items():
+            if key.startswith("mesh."):
+                mesh_keys[key[5:]] = value
+            else:
+                direct_keys[key] = value
+
+        mesh = Mesh.from_state_dict(mesh_keys)
+        return cls(
+            mesh=mesh,
+            faces=direct_keys["faces"],
+            barys=direct_keys["barys"],
+            disps=direct_keys["disps"],
+            scales=direct_keys["scales"],
+            rots=direct_keys["rots"],
+            colors=direct_keys["colors"],
+            sh_degree=int(direct_keys["sh_degree"]),
+            splat_height=float(direct_keys["splat_height"]),
+        )
+
     def __len__(self) -> int:
         return self.scales.shape[0]
 
@@ -72,6 +95,7 @@ class SplatMesh(Model):
             [
                 self.scales,
                 self.splat_height.unsqueeze(-1)
+                .to(self.device)
                 .unsqueeze(-1)
                 .expand(self.faces.shape[0], 1),
             ],
@@ -85,7 +109,7 @@ class SplatMesh(Model):
 
     @property
     def reference_axis(self) -> Float[Tensor, "N 3"]:
-        return self.up.unsqueeze(0).expand(len(self), -1)
+        return self.up.unsqueeze(0).expand(len(self), -1).to(self.device)
 
     @property
     def anchors_3d(self) -> Float[Tensor, "N 3"]:

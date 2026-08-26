@@ -157,7 +157,6 @@ class Quaternion:
     ) -> Float[Tensor, "N 4"]:
         v_src = v_src / (v_src.norm(dim=1, keepdim=True) + eps)
         v_dst = v_dst / (v_dst.norm(dim=1, keepdim=True) + eps)
-
         cross = torch.cross(v_src, v_dst, dim=1)
         dot = (v_src * v_dst).sum(dim=1, keepdim=True)
 

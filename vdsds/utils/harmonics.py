@@ -5,12 +5,16 @@ import math
 
 from jaxtyping import Float
 from torch import Tensor
-from typing import Optional
+from typing import Dict, Optional
 
 
 class SphericalHarmonic(nn.Module):
     def __init__(
-        self, degree: int, num_dims: int, batch_size: int, weights: Optional[Tensor[Float "B W"]] = None
+        self,
+        degree: int,
+        num_dims: int,
+        batch_size: int,
+        weights: Optional[Tensor[Float, "B W"]] = None,
     ):
         super().__init__()
         self.degree = degree
@@ -29,6 +33,15 @@ class SphericalHarmonic(nn.Module):
             ),
         )
         self.register_buffer("ones_shape", torch.ones((self.batch_size, 1)))
+
+    @classmethod
+    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> SphericalHarmonic:
+        weights = state_dict["weights"]
+        batch_size, num_dims, num_coeffs = weights.shape
+        degree = int(math.sqrt(num_coeffs)) - 1
+        return cls(
+            degree=degree, num_dims=num_dims, batch_size=batch_size, weights=weights
+        )
 
     def copy(self) -> SphericalHarmonic:
         return SphericalHarmonic(
@@ -70,7 +83,9 @@ class SphericalHarmonic(nn.Module):
             P[l] = torch.stack(arr, dim=-1)
         return P
 
-    def from_polar(self, theta: Float[Tensor, "N ..."], phi: Float[Tensor, "N ..."]) -> Float[Tensor, "B N Ndims"]:
+    def from_polar(
+        self, theta: Float[Tensor, "N ..."], phi: Float[Tensor, "N ..."]
+    ) -> Float[Tensor, "B N Ndims"]:
         # theta, phi: [B, N]
         if len(theta.shape) == 0:
             theta = self.ones_shape * theta
