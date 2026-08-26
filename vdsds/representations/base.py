@@ -14,6 +14,14 @@ class Model(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self) -> torch.device:
+        next(self.parameters()).dtype
+
     def register_parameter(self, name: str, value: Tensor | nn.Parameter) -> None:
         if isinstance(value, nn.Parameter):
             setattr(self, name, value)

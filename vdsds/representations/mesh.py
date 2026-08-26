@@ -8,7 +8,7 @@ from jaxtyping import Float, Int
 from .base import Model
 from .splat import Splat
 from ..utils.quaternion import Quaternion
-from .utils.camera import Camera
+from ..utils.camera import Camera
 
 
 class Mesh(Model):
@@ -19,7 +19,7 @@ class Mesh(Model):
     ):
         super().__init__()
         self.register_parameter("V", V)
-        self.register_parameter("F", F)
+        self.register_buffer("F", F)
 
     def copy(self) -> Mesh:
         return Mesh(

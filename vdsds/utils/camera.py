@@ -19,11 +19,11 @@ class CameraCoordinates:
         self,
         origin: torch.Tensor = None,
         Q: Quaternion = None,
-        radius: float = 1.5,
+        radius: float = 2.0,
     ):
-        self.origin = torch.tensor([0, 0, 0]) if origin is None else origin
+        self.origin = torch.tensor([0.0, 0.0, 0.0]) if origin is None else origin
         self.radius: float = radius
-        self.Q = Quaternion.identity(device=self.device) if Q is None else Q
+        self.Q = Quaternion.identity() if Q is None else Q
         self.up = torch.tensor([0, 0, 1])
 
     @property
@@ -126,7 +126,7 @@ class Camera:
         """
         Returns camera's rotation matrix
         """
-        return self.co.Q.R
+        return self.co.Q.R()
 
     @property
     def w2c(self) -> Float[Tensor, "4 4"]:

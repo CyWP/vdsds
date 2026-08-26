@@ -2,9 +2,9 @@ import numpy as np
 
 from typing import Tuple
 
-from PySide6.QtCore import QObject, Qt, Signal, QLabel, QPoint
+from PySide6.QtCore import QObject, Qt, Signal, QPoint
 from PySide6.QtGui import QKeyEvent, QImage, QPixmap, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QMainWindow, QSizePolicy
+from PySide6.QtWidgets import QMainWindow, QSizePolicy, QLabel
 
 
 class AppView(QObject):
@@ -113,7 +113,6 @@ class Viewport(QLabel):
 
     def set_image(self, array: np.ndarray):
         """Update viewport with an image from a NumPy array."""
-        # breakpoint()
         if array.ndim == 2:  # grayscale
             h, w = array.shape
             bytes_per_line = w

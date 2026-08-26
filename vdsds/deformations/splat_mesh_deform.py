@@ -32,6 +32,6 @@ class SplatMeshDeformation(Deformation):
             disps=m.disps,
             scales=m.scales,
             rots=m.rots,
-            colors=(m.colors + colors_disp).clamp(0, 1),
+            colors=(m.colors + colors_disp),
             sh_degree=m.sh_degree,
         )

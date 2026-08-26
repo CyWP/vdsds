@@ -1,5 +1,6 @@
 import threading
 import time
+import traceback
 
 
 class TimedJob:
@@ -23,7 +24,12 @@ class TimedJob:
     def loop(self):
         while self.running:
             start_time = time.time()
-            self.action()
+            try:
+                self.action()
+            except Exception:
+                traceback.print_exc()
+                self.running = False
+                break
             elapsed = time.time() - start_time
             sleep_time = self.interval - elapsed
             if sleep_time > 0:

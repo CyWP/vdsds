@@ -7,8 +7,7 @@ from jaxtyping import Float
 
 from gsplat import rasterization
 
-from base.camera import Camera
-from utils.pytorch import soft_clamp
+from ..utils.camera import Camera
 
 from .base import Model
 
@@ -105,40 +104,12 @@ class Splat(Model):
             self.scales,
             self.opacities,
             self.colors,
-            camera.w2c().unsqueeze(0).contiguous(),
-            camera.K().unsqueeze(0).contiguous(),
+            camera.w2c.unsqueeze(0).contiguous(),
+            camera.K.unsqueeze(0).contiguous(),
             camera.W,
             camera.H,
             render_mode="RGB",
             sh_degree=self.sh_degree,
             backgrounds=None,
         )
-        return soft_clamp(torch.cat([color, alpha], dim=-1).permute(0, 3, 1, 2))
-
-    def depth_map(
-        self, camera: Camera, alpha: bool = True
-    ) -> (
-        Float[Tensor, "1 1 H W"]
-        | Tuple[Float[Tensor, "1 1 H W"], Float[Tensor, "1 1 H W"]]
-    ):
-        depth, a, _ = rasterization(
-            self.means,
-            self.quats,
-            self.scales,
-            self.opacities,
-            self.colors,
-            camera.w2c().unsqueeze(0).contiguous(),
-            camera.K().unsqueeze(0).contiguous(),
-            camera.W,
-            camera.H,
-            render_mode="ED",
-            sh_degree=self.sh_degree,
-            backgrounds=None,
-        )
-
-        # Move to (B, 1, H, W)
-        depth = depth.permute(0, 3, 1, 2)
-        if alpha:
-            a = a.permute(0, 3, 1, 2)
-            return depth, a
-        return depth
+        return torch.cat([color, alpha], dim=-1).permute(0, 3, 1, 2)

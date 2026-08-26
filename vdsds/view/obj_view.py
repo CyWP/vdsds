@@ -11,9 +11,17 @@ from .keymap import K_SHIFT, K_CTRL
 
 
 class ObjViewer:
-    def __init__(self, obj: Rasterizable, camera: Optional[Camera] = None):
+    def __init__(
+        self,
+        obj: Rasterizable,
+        camera: Optional[Camera] = None,
+        sensitivity: float = 60.0,
+    ):
         self.obj = obj
-        self.camera = Camera() if camera is None else camera
+        self.camera = (
+            Camera().to(obj.device) if camera is None else camera.to(obj.device)
+        )
+        self.sensitivity = sensitivity
         self.rot_x: int = 0
         self.rot_y: int = 0
         self.tran_x: int = 0
@@ -30,7 +38,6 @@ class ObjViewer:
         self.check_translation()
         render = self.obj.rasterize(self.camera)
         # render = Float[Tensor, "B 4 H W"].fill_background(render, self.bg_color)
-        render = self.add_orientation(render)
         return render
 
     def check_rotation(self):
@@ -86,4 +93,4 @@ class ObjViewer:
         pass
 
     def scroll(self, x: int, keys: List[int] = None):
-        self.camera.translate_depth(x / 1000)
+        self.camera.translate_depth(x / 600)

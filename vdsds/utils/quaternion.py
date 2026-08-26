@@ -5,7 +5,7 @@ import random
 from jaxtyping import Float
 from typing import Tuple
 from math import sin, cos, sqrt, pi
-from . import DEG2RAD, RAD2DEG
+from .math import DEG2RAD, RAD2DEG
 
 
 class Quaternion:
