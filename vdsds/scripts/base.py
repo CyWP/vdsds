@@ -43,16 +43,20 @@ class ViewableScript(Script):
         self.fps = fps
         self.close_on_finish = close_on_finish
         self.finish_on_close = finish_on_close
-        self._abort = threading.Event()
+        self._closed = threading.Event()
         if view:
-            on_close = self._abort.set if finish_on_close else None
-            self.view = View(self.model, fps=fps, on_close=on_close)
+            self.view = View(self.model, fps=fps, on_close=self._on_close)
         else:
             self.view = None
 
     def abort_requested(self) -> bool:
-        """True once the user has requested the script to finish by closing the window."""
-        return self.finish_on_close and self._abort.is_set()
+        """True once the user has closed the window while ``finish_on_close`` is set."""
+        return self.finish_on_close and self._closed.is_set()
+
+    def _on_close(self):
+        self._closed.set()
+        if self.finish_on_close:
+            self.finish()
 
     def launch(self) -> int:
         """
@@ -87,13 +91,19 @@ class ViewableScript(Script):
     def _finalize(self):
         if self.view is None:
             return
-        if self.close_on_finish or not self.finish_on_close:
-            # Script is done and the window isn't kept alive for it.
+        if self.close_on_finish:
+            self.finish()
             QTimer.singleShot(0, self.view.close)
             return
         # Keep the window open until the user closes it.
-        self._abort.wait()
+        self._closed.wait()
+        if not self.finish_on_close:
+            # Natural end: the script finished and closing is not what finishes it.
+            self.finish()
         QTimer.singleShot(0, self.view.close)
 
     def run(self):
         raise NotImplementedError
+
+    def finish(self):
+        pass

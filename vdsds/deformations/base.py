@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from typing import Dict, Type
+from typing import Dict, List, Type
 from torch import Tensor, nn
 from jaxtyping import Float
 
@@ -47,6 +47,18 @@ class Deformation(nn.Module, Rasterizable):
 
     def __len__(self) -> int:
         return len(self.model)
+
+    def get_parameters(self) -> List[nn.Parameter]:
+        """
+        Parameters of the deformation, excluding the model's parameters unless
+        the model itself is trainable.
+        """
+        model_trainable = any(p.requires_grad for p in self.model.parameters())
+        return [
+            param
+            for name, param in self.named_parameters()
+            if not name.startswith("model.") or model_trainable
+        ]
 
     def deformed(self, camera: Camera) -> Model:
         raise NotImplementedError()
