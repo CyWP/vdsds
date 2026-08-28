@@ -34,7 +34,9 @@ class Quaternion:
         self.q.requires_grad_(mode)
 
     @classmethod
-    def from_axis_angle(cls, axis: Float[Tensor, "3"], angle: float) -> Quaternion:
+    def from_axis_angle(
+        cls, axis: Float[Tensor, "3"], angle: Float[Tensor, ""]
+    ) -> Quaternion:
         axis = axis / axis.norm()
         half = angle * 0.5
         w = torch.cos(half)

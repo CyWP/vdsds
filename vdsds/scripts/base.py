@@ -37,6 +37,7 @@ class ViewableScript(Script):
         close_on_finish: bool = False,
         finish_on_close: bool = True,
         device: torch.device = torch.device("cuda:0"),
+        **kwargs,
     ):
         super().__init__()
         self.model = load_model(model_path).to(device)
@@ -48,6 +49,14 @@ class ViewableScript(Script):
             self.view = View(self.model, fps=fps, on_close=self._on_close)
         else:
             self.view = None
+
+    @property
+    def device(self) -> torch.device:
+        return self.model.device
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.model.dtype
 
     def abort_requested(self) -> bool:
         """True once the user has closed the window while ``finish_on_close`` is set."""

@@ -163,7 +163,7 @@ class SplatMesh(Model):
         uv_co: Float[Tensor, "3F 2"],
         uv_idx: Float[Tensor, "3F"],
         texture: Splimage,
-        num_splats: int = 300000,
+        num_splats: int = 100000,
         unit_box: bool = True,
     ):
         if unit_box:

@@ -19,7 +19,7 @@ class CameraCoordinates:
         self,
         origin: torch.Tensor = None,
         Q: Quaternion = None,
-        radius: float = 2.0,
+        radius: float = 1,
     ):
         self.origin = torch.tensor([0.0, 0.0, 0.0]) if origin is None else origin
         self.radius: float = radius

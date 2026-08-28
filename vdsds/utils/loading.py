@@ -70,7 +70,7 @@ def load_obj(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
             raise e
         uv_co = torch.tensor(uv_co)[:, :2]
         uv_co[:, 1] = 1 - uv_co[:, 1]
-        V[:, 1] *= -1
+        V[:, 1] = -V[:, 1]
     return {
         "V": V,
         "F": torch.tensor(F, dtype=torch.long),
@@ -93,8 +93,9 @@ def load_glb(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
         uv_co = torch.tensor(mesh.visual.uv, dtype=torch.float32)
         uv_co[:, 1] = 1 - uv_co[:, 1]
         uv_idx = F.clone()
-        # V[:, 1] *= -1
         mtl = Splimage(mesh.visual.material.baseColorTexture)
+    V[:, 2] *= -1
+    V = torch.stack([V[:, 1], V[:, 0], V[:, 2]], dim=1)
     return {
         "V": V,
         "F": F,

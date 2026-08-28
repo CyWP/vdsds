@@ -11,9 +11,13 @@ from diffusers import DDIMScheduler, DiffusionPipeline
 from jaxtyping import Float
 from PIL import Image
 from typing import List, Dict
-from dc.dc_unet import CustomUNet2DConditionModel
-from dc.utils.free_lunch import register_free_upblock2d_in, register_free_crossattn_upblock2d_in
+from .dc_unet import CustomUNet2DConditionModel
+from .utils.free_lunch import (
+    register_free_upblock2d_in,
+    register_free_crossattn_upblock2d_in,
+)
 import math
+
 
 @dataclass
 class DCConfig:
@@ -36,10 +40,10 @@ class DCConfig:
     delta = 0.2
     gamma = 0.8
 
-    freeu_b1: float=1.1
-    freeu_b2: float=1.1
-    freeu_s1: float=0.9
-    freeu_s2: float=0.2
+    freeu_b1: float = 1.1
+    freeu_b2: float = 1.1
+    freeu_s1: float = 0.9
+    freeu_s2: float = 0.2
 
 
 class DC(object):
@@ -47,15 +51,16 @@ class DC(object):
         self.config = config
         self.device = torch.device(config.device)
 
-        self.pipe = DiffusionPipeline.from_pretrained(config.sd_pretrained_model_or_path).to(self.device)
+        self.pipe = DiffusionPipeline.from_pretrained(
+            config.sd_pretrained_model_or_path
+        ).to(self.device)
 
         self.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
         self.scheduler.set_timesteps(config.num_inference_steps)
         self.pipe.scheduler = self.scheduler
 
         self.unet = CustomUNet2DConditionModel.from_pretrained(
-            config.sd_pretrained_model_or_path,
-            subfolder="unet"
+            config.sd_pretrained_model_or_path, subfolder="unet"
         ).to(self.device)
         self.tokenizer = self.pipe.tokenizer
         self.text_encoder = self.pipe.text_encoder
@@ -69,9 +74,11 @@ class DC(object):
         self.src_prompt = self.config.src_prompt
         self.tgt_prompt = self.config.tgt_prompt
 
-        self.update_text_features(src_prompt=self.src_prompt, tgt_prompt=self.tgt_prompt)
+        self.update_text_features(
+            src_prompt=self.src_prompt, tgt_prompt=self.tgt_prompt
+        )
         self.null_text_feature = self.encode_text("")
-    
+
         self.use_wandb = use_wandb
 
         self.threshold = 0.2
@@ -82,13 +89,12 @@ class DC(object):
 
         b1 = self.config.freeu_b1
         b2 = self.config.freeu_b2
-        s1= self.config.freeu_s1
-        s2= self.config.freeu_s2
+        s1 = self.config.freeu_s1
+        s2 = self.config.freeu_s2
 
         register_free_upblock2d_in(self.unet, b1, b2, s1, s2)
         register_free_crossattn_upblock2d_in(self.unet, b1, b2, s1, s2)
 
-        
     def compute_posterior_mean(self, xt, noise_pred, t, t_prev):
         """
         Computes an estimated posterior mean \mu_\phi(x_t, y; \epsilon_\phi).
@@ -99,11 +105,13 @@ class DC(object):
         alpha_bar_t = self.scheduler.alphas_cumprod[t].to(device)
         alpha_bar_t_prev = self.scheduler.alphas_cumprod[t_prev].to(device)
 
-        pred_x0 = (xt - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+        pred_x0 = (xt - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(
+            alpha_bar_t
+        )
         c0 = torch.sqrt(alpha_bar_t_prev) * beta_t / (1 - alpha_bar_t)
         c1 = torch.sqrt(alpha_t) * (1 - alpha_bar_t_prev) / (1 - alpha_bar_t)
         mean_func = c0 * pred_x0 + c1 * xt
-        
+
         return mean_func, pred_x0
 
     def encode_image(self, img_tensor: Float[torch.Tensor, "B C H W"]):
@@ -111,7 +119,7 @@ class DC(object):
         x = 2 * x - 1
         x = x.float()
         return self.vae.encode(x).latent_dist.sample() * 0.18215
-    
+
     def encode_src_image(self, img_tensor: Float[torch.Tensor, "B C H W"]):
         x = img_tensor.float()
         return self.vae.encode(x)
@@ -155,13 +163,26 @@ class DC(object):
         self.scheduler.set_timesteps(self.config.num_inference_steps)
         timesteps = reversed(self.scheduler.timesteps)
 
-        min_step = 1 if self.config.min_step_ratio <= 0 else int(len(timesteps) * self.config.min_step_ratio)
+        min_step = (
+            1
+            if self.config.min_step_ratio <= 0
+            else int(len(timesteps) * self.config.min_step_ratio)
+        )
         max_step = (
-            len(timesteps) if self.config.max_step_ratio >= 1 else int(len(timesteps) * self.config.max_step_ratio)
+            len(timesteps)
+            if self.config.max_step_ratio >= 1
+            else int(len(timesteps) * self.config.max_step_ratio)
         )
         max_step = max(max_step, min_step + 1)
 
-        idx = torch.full((batch_size,), (max_step-min_step)*((self.max_iteration-self.iteration)/self.max_iteration) + min_step, dtype=torch.long, device="cpu")
+        idx = torch.full(
+            (batch_size,),
+            (max_step - min_step)
+            * ((self.max_iteration - self.iteration) / self.max_iteration)
+            + min_step,
+            dtype=torch.long,
+            device="cpu",
+        )
 
         timestep_noralized = idx[0].item() / len(timesteps)
         t = timesteps[idx].cpu()
@@ -193,21 +214,21 @@ class DC(object):
 
         batch_size = tgt_x0.shape[0]
         t, t_prev, t_normalized = self.dc_timestep_sampling(batch_size)
-        
+
         beta_t = scheduler.betas[t].to(device)
         alpha_t = scheduler.alphas[t].to(device)
         alpha_bar_t = scheduler.alphas_cumprod[t].to(device)
         alpha_bar_t_prev = scheduler.alphas_cumprod[t_prev].to(device)
-        
-        '''
+
+        """
         beta_t_tau = scheduler.betas[t_tau].to(device)
         alpha_t_tau = scheduler.alphas[t_tau].to(device)
         alpha_bar_t_tau = scheduler.alphas_cumprod[t_tau].to(device)      
-        '''
+        """
 
         noise = torch.randn_like(tgt_x0)
         noise_t_prev = torch.randn_like(tgt_x0)
-        '''h_t_tau = 0.3 * torch.sqrt(1 - alpha_t_tau) * noise
+        """h_t_tau = 0.3 * torch.sqrt(1 - alpha_t_tau) * noise
         with torch.no_grad():
             #DDIM inversion
                 latents_noisy = scheduler.add_noise
@@ -216,24 +237,27 @@ class DC(object):
                     latent_model_input,
                     torch.cat([t] * 3).to(device),
                     encoder_hidden_states=text_embeddings,
-                )'''
-        
-        
+                )"""
+
         eps = dict()
         pred_x0s = dict()
         noisy_latents = dict()
-        
+
         for latent, cond_text_embedding, name in zip(
             [tgt_x0, src_x0], [tgt_text_embedding, src_text_embedding], ["tgt", "src"]
         ):
             latents_noisy = scheduler.add_noise(latent, noise, t)
-            text_embeddings = torch.cat([cond_text_embedding, uncond_embedding, uncond_embedding], dim=0)
+            text_embeddings = torch.cat(
+                [cond_text_embedding, uncond_embedding, uncond_embedding], dim=0
+            )
             text_embeddings = torch.cat([text_embeddings, text_embeddings], dim=1)
 
             src_encoded = src_emb.latent_dist.mode()
-            
+
             uncond_image_latent = torch.zeros_like(src_encoded)
-            latent_image = torch.cat([src_encoded, src_encoded, uncond_image_latent], dim=0)
+            latent_image = torch.cat(
+                [src_encoded, src_encoded, uncond_image_latent], dim=0
+            )
             latent_model_input = torch.cat([latents_noisy] * 3, dim=0)
             latent_model_input = torch.cat([latent_model_input, latent_image], dim=1)
 
@@ -247,38 +271,86 @@ class DC(object):
 
             noise_pred_text, noise_pred_image, noise_pred_uncond = noise_pred.chunk(3)
             if name == "tgt":
-                noise_pred = noise_pred_uncond + self.config.guidance_scale * (noise_pred_text - noise_pred_image) + \
-                    self.config.image_guidance_scale * (noise_pred_image - noise_pred_uncond)
+                noise_pred = (
+                    noise_pred_uncond
+                    + self.config.guidance_scale * (noise_pred_text - noise_pred_image)
+                    + self.config.image_guidance_scale
+                    * (noise_pred_image - noise_pred_uncond)
+                )
             else:
-                noise_pred = noise_pred_uncond + self.config.image_guidance_scale * (noise_pred_image - noise_pred_uncond)
+                noise_pred = noise_pred_uncond + self.config.image_guidance_scale * (
+                    noise_pred_image - noise_pred_uncond
+                )
 
-            mu, pred_x0 = self.compute_posterior_mean(latents_noisy, noise_pred, t, t_prev)
+            mu, pred_x0 = self.compute_posterior_mean(
+                latents_noisy, noise_pred, t, t_prev
+            )
 
             eps[name] = noise_pred
             pred_x0s[name] = pred_x0
             noisy_latents[name] = latents_noisy
-           
+
         self.iteration += 1
-        
-        w_DDS = self.config.delta + self.config.gamma * (t_normalized ** (1/math.e))
-        grad = w_DDS * (eps["tgt"] - eps["src"]) + (self.config.psi * (math.exp(t_normalized))) * (tgt_x0 - src_x0)
+
+        w_DDS = self.config.delta + self.config.gamma * (t_normalized ** (1 / math.e))
+        grad = w_DDS * (eps["tgt"] - eps["src"]) + (
+            self.config.psi * (math.exp(t_normalized))
+        ) * (tgt_x0 - src_x0)
         grad = torch.nan_to_num(grad)
-        
+
         target = (tgt_x0 - grad).detach()
-        loss = 0.5 * F.mse_loss(tgt_x0, target, reduction=reduction) / batch_size 
-        
-        
+        loss = 0.5 * F.mse_loss(tgt_x0, target, reduction=reduction) / batch_size
+
         if self.use_wandb:
             import wandb
-            wandb.log({
-                f"target_prediction_x0_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(pred_x0s["tgt"])), min_size=256), caption=f"{t.item()}"),
-                f"source_prediction_x0_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(pred_x0s["src"])), min_size=256), caption=f"{t.item()}"),
-                f"target_noise_prediction_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(eps["tgt"])), min_size=256), caption=f"{t.item()}"),
-                f"source_noise_prediction_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(eps["src"])), min_size=256), caption=f"{t.item()}"),
-                f"target_noisy_latents_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(noisy_latents["tgt"])), min_size=256), caption=f"{t.item()}"),
-                f"source_noisy_latents_{current_spot}": wandb.Image(resize_image(tensor_to_pil(self.decode_latent(noisy_latents["src"])), min_size=256), caption=f"{t.item()}"),
-            }, step=step, commit=False) if step % self.config.log_step == 0 else None
-        
+
+            wandb.log(
+                {
+                    f"target_prediction_x0_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(pred_x0s["tgt"])),
+                            min_size=256,
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                    f"source_prediction_x0_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(pred_x0s["src"])),
+                            min_size=256,
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                    f"target_noise_prediction_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(eps["tgt"])), min_size=256
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                    f"source_noise_prediction_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(eps["src"])), min_size=256
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                    f"target_noisy_latents_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(noisy_latents["tgt"])),
+                            min_size=256,
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                    f"source_noisy_latents_{current_spot}": wandb.Image(
+                        resize_image(
+                            tensor_to_pil(self.decode_latent(noisy_latents["src"])),
+                            min_size=256,
+                        ),
+                        caption=f"{t.item()}",
+                    ),
+                },
+                step=step,
+                commit=False,
+            ) if step % self.config.log_step == 0 else None
+
         if return_dict:
             dic = {"loss": loss, "grad": grad, "t": t}
             return dic
@@ -312,25 +384,39 @@ class DC(object):
                 encoder_hidden_states=text_embeddings,
             ).sample
             noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + self.config.guidance_scale * (noise_pred_text - noise_pred_uncond)
+            noise_pred = noise_pred_uncond + self.config.guidance_scale * (
+                noise_pred_text - noise_pred_uncond
+            )
             xt = self.reverse_step(noise_pred, t, xt, eta=eta)
 
         return xt
 
     def reverse_step(self, model_output, timestep, sample, eta=0, variance_noise=None):
-        prev_timestep = timestep - self.scheduler.config.num_train_timesteps // self.scheduler.num_inference_steps
+        prev_timestep = (
+            timestep
+            - self.scheduler.config.num_train_timesteps
+            // self.scheduler.num_inference_steps
+        )
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         alpha_prod_t_prev = (
-            self.scheduler.alphas_cumprod[prev_timestep] if prev_timestep >= 0 else self.scheduler.final_alpha_cumprod
+            self.scheduler.alphas_cumprod[prev_timestep]
+            if prev_timestep >= 0
+            else self.scheduler.final_alpha_cumprod
         )
         beta_prod_t = 1 - alpha_prod_t
 
-        pred_original_sample = (sample - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+        pred_original_sample = (
+            sample - beta_prod_t ** (0.5) * model_output
+        ) / alpha_prod_t ** (0.5)
 
         variance = self.get_variance(timestep)
         model_output_direction = model_output
-        pred_sample_direction = (1 - alpha_prod_t_prev - eta * variance) ** (0.5) * model_output_direction
-        prev_sample = alpha_prod_t_prev ** (0.5) * pred_original_sample + pred_sample_direction
+        pred_sample_direction = (1 - alpha_prod_t_prev - eta * variance) ** (
+            0.5
+        ) * model_output_direction
+        prev_sample = (
+            alpha_prod_t_prev ** (0.5) * pred_original_sample + pred_sample_direction
+        )
         if eta > 0:
             if variance_noise is None:
                 variance_noise = torch.randn_like(model_output)
@@ -339,14 +425,22 @@ class DC(object):
         return prev_sample
 
     def get_variance(self, timestep):
-        prev_timestep = timestep - self.scheduler.config.num_train_timesteps // self.scheduler.num_inference_steps
+        prev_timestep = (
+            timestep
+            - self.scheduler.config.num_train_timesteps
+            // self.scheduler.num_inference_steps
+        )
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         alpha_prod_t_prev = (
-            self.scheduler.alphas_cumprod[prev_timestep] if prev_timestep >= 0 else self.scheduler.final_alpha_cumprod
+            self.scheduler.alphas_cumprod[prev_timestep]
+            if prev_timestep >= 0
+            else self.scheduler.final_alpha_cumprod
         )
         beta_prod_t = 1 - alpha_prod_t
         beta_prod_t_prev = 1 - alpha_prod_t_prev
-        variance = (beta_prod_t_prev / beta_prod_t) * (1 - alpha_prod_t / alpha_prod_t_prev)
+        variance = (beta_prod_t_prev / beta_prod_t) * (
+            1 - alpha_prod_t / alpha_prod_t_prev
+        )
         return variance
 
 
@@ -354,10 +448,10 @@ def tensor_to_pil(img):
     if img.ndim == 4:
         img = img[0]
     img = img.cpu().permute(1, 2, 0).detach().numpy()
-    
+
     if img.shape[-1] == 1:
         img = img.squeeze(-1)
-    
+
     img = (img * 255).astype(np.uint8)
     img = Image.fromarray(img)
     return img
