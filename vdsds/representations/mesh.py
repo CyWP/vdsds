@@ -18,12 +18,22 @@ class Mesh(Model):
         F: Int[Tensor, "F 3"],
     ):
         super().__init__()
-        self.register_parameter("V", V)
-        self.register_buffer("F", F)
+        self.V = V
+        self.F = F
+
+    def _tensors(self) -> Dict[str, Tensor]:
+        return {"V": self.V, "F": self.F}
+
+    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+        self.V = tensor_dict["V"]
+        self.F = tensor_dict["F"]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"V": self.V, "F": self.F}
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Mesh:
-        return cls(V=state_dict["V"], F=state_dict["F"])
+    def from_dict(cls, data: Dict[str, Any]) -> Mesh:
+        return cls(V=data["V"], F=data["F"])
 
     def copy(self) -> Mesh:
         return Mesh(
@@ -71,10 +81,6 @@ class Mesh(Model):
     def E(self) -> Int[Tensor, "E 2"]:
         return self.unique_edges[0]
 
-    # @property
-    # def FE(self) -> Int[Tensor, " 3"]:
-    #     return self.unique_edges[1].view(-1, 3)
-
     @property
     def EF(self) -> Tuple[Int[Tensor, "E"], Int[Tensor, "F"]]:
         nF = self.num_F
@@ -110,10 +116,6 @@ class Mesh(Model):
 
     @property
     def face_normals(self) -> Float[Tensor, "F 3"]:
-        """
-        Not actual face normals, but always consistent for optimization.
-        Always aligned away for the mesh centroid, so kind of a convex hull implementation.
-        """
         a, b, c = self.V[self.F[:, 0]], self.V[self.F[:, 1]], self.V[self.F[:, 2]]
         ab = b - a
         ac = c - a
@@ -148,7 +150,7 @@ class Mesh(Model):
     def L_cotan(self) -> Float[Tensor, "V V"]:
         F = self.F
         V = self.V
-        eps = self.eps
+        eps = 1e-8
         n = V.shape[0]
         device = V.device
 
@@ -180,7 +182,6 @@ class Mesh(Model):
             torch.stack([I, J]), W, (n, n), device=device
         ).coalesce()
 
-        # Compute diagonal: sum of weights per row
         diag = torch.zeros(n, device=device)
         diag = diag.scatter_add(0, I, W)
 
@@ -210,7 +211,6 @@ class Mesh(Model):
         nV = self.num_V
         i = torch.cat([F[:, 0], F[:, 1], F[:, 2]])
         j = torch.cat([F[:, 1], F[:, 2], F[:, 0]])
-        # make symmetric
         i = torch.cat([i, j])
         j = torch.cat([j, i])
 
@@ -322,11 +322,11 @@ class Mesh(Model):
         nbhd_set = nbhds.flatten().unique()
         return (
             nbhds.numel() - nbhd_set.numel() == 2
-        )  # Only correct under assumption of manifold mesh
+        )
 
     @torch.no_grad
     def collapse_edges(self, idx: torch.Tensor) -> Mesh:
-        for i in range(len(idx)):  # Vectorizing this implies resolving conflicts first
+        for i in range(len(idx)):
             ei = idx[i]
             if self.collapse_manifold(ei):
                 self.collapse_edge(ei)
@@ -362,13 +362,12 @@ class Mesh(Model):
         F: Optional[Int[Tensor, "F 3"]] = None,
         face_idx: Optional[Int[Tensor, "N"]] = None,
     ) -> Float[Tensor, "N C"]:
-        F = self.F if F is None else F  # [NF, 3]
+        F = self.F if F is None else F
         if face_idx is not None:
             F = F[face_idx]
-        emb_data = data[F]  # [NS, 3, C]
-        # expand b_co to broadcast over C
-        b_co = b_co.unsqueeze(-1)  # [N, 3, 1]
-        return (emb_data * b_co).sum(dim=1)  # [N, C]
+        emb_data = data[F]
+        b_co = b_co.unsqueeze(-1)
+        return (emb_data * b_co).sum(dim=1)
 
     @property
     def make_wireframe(self) -> Splat:

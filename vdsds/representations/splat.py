@@ -1,7 +1,7 @@
 from __future__ import annotations
 import torch
 
-from typing import Any, Dict, Sequence, Tuple
+from typing import Any, Dict, Sequence
 from torch import Tensor
 from jaxtyping import Float
 
@@ -23,13 +23,29 @@ class Splat(Model):
         sh_degree: int,
     ):
         super().__init__()
-        self.register_parameter("means", means)
-        self.register_parameter("quats", quats)
-        self.register_parameter("scales", scales)
-        self.register_parameter("opacities", opacities)
-        self.register_parameter("colors", colors)
+        self.means = means
+        self.quats = quats
+        self.scales = scales
+        self.opacities = opacities
+        self.colors = colors
         self.sh_degree = sh_degree
         self.alpha_cutoff = 0.0
+
+    def _tensors(self) -> Dict[str, Tensor]:
+        return {
+            "means": self.means,
+            "quats": self.quats,
+            "scales": self.scales,
+            "opacities": self.opacities,
+            "colors": self.colors,
+        }
+
+    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+        self.means = tensor_dict["means"]
+        self.quats = tensor_dict["quats"]
+        self.scales = tensor_dict["scales"]
+        self.opacities = tensor_dict["opacities"]
+        self.colors = tensor_dict["colors"]
 
     def copy(self) -> Splat:
         return Splat(
@@ -59,18 +75,7 @@ class Splat(Model):
             scales=data["scales"],
             opacities=data["opacities"],
             colors=data["colors"],
-            sh_degree=data["sh_degree"],
-        )
-
-    @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Splat:
-        return cls(
-            means=state_dict["means"],
-            quats=state_dict["quats"],
-            scales=state_dict["scales"],
-            opacities=state_dict["opacities"],
-            colors=state_dict["colors"],
-            sh_degree=int(state_dict["sh_degree"]),
+            sh_degree=int(data["sh_degree"]),
         )
 
     @staticmethod
@@ -102,10 +107,6 @@ class Splat(Model):
         return self.means.shape[0]
 
     def centroid(self) -> Float[Tensor, "3"]:
-        """
-        Returns the centroid of the splat.
-        Assumes infinitely small gaussians.
-        """
         return torch.mean(self.means, dim=0)
 
     def rasterize(self, camera: Camera) -> Float[Tensor, "1 4 H W"]:

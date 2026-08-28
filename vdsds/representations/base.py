@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 
 from jaxtyping import Float
 from torch import Tensor
@@ -10,49 +9,52 @@ from typing import Dict, List, Type
 from ..utils.camera import Camera
 
 
-class Model(nn.Module):
+class Model:
     def __init__(self, *args, **kwargs):
-        super().__init__()
+        pass
 
     @property
     def device(self) -> torch.device:
-        return next(self.parameters()).device
+        for v in self._tensors().values():
+            return v.device
+        raise ValueError(f"{self.__class__.__name__} has no tensors")
 
     @property
-    def dtype(self) -> torch.device:
-        next(self.parameters()).dtype
+    def dtype(self) -> torch.dtype:
+        for v in self._tensors().values():
+            if v.is_floating_point():
+                return v.dtype
+        for v in self._tensors().values():
+            return v.dtype
+        raise ValueError(f"{self.__class__.__name__} has no tensors")
 
-    def register_parameter(self, name: str, value: Tensor | nn.Parameter) -> None:
-        if isinstance(value, nn.Parameter):
-            super().register_parameter(name, value)
-        else:
-            super().register_parameter(name, nn.Parameter(value))
+    def _tensors(self) -> Dict[str, Tensor]:
+        raise NotImplementedError
+
+    def to(self, *args, **kwargs) -> Model:
+        mapped = {}
+        for k, v in self._tensors().items():
+            mapped[k] = v.to(*args, **kwargs)
+        self._apply_tensors(mapped)
+        return self
+
+    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+        raise NotImplementedError
+
+    def requires_grad_(self, mode: bool = True) -> Model:
+        for v in self._tensors().values():
+            v.requires_grad_(mode)
+        return self
+
+    def parameters(self) -> List[Tensor]:
+        return [v for v in self._tensors().values() if v.is_floating_point()]
+
+    def to_dict(self) -> Dict[str, Tensor]:
+        raise NotImplementedError
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Model:
-        direct_params = {}
-        submodule_dicts: Dict[str, Dict[str, Tensor]] = {}
-
-        for key, value in state_dict.items():
-            if "." in key:
-                prefix, rest = key.split(".", 1)
-                submodule_dicts.setdefault(prefix, {})[rest] = value
-            else:
-                direct_params[key] = value
-
-        submodules = {}
-        for name, sub_dict in submodule_dicts.items():
-            sub_cls = cls._get_submodule_type(name)
-            submodules[name] = sub_cls.from_state_dict(sub_dict)
-
-        return cls(**direct_params, **submodules)
-
-    @classmethod
-    def _get_submodule_type(cls, name: str) -> Type[Model]:
-        hints = cls.__init__.__annotations__
-        if name in hints:
-            return hints[name]
-        raise ValueError(f"Cannot determine type for submodule '{name}' in {cls.__name__}")
+    def from_dict(cls, data: Dict[str, Tensor]) -> Model:
+        raise NotImplementedError
 
     def combine(self, models: List[Model]) -> Model:
         raise NotImplementedError()

@@ -18,7 +18,7 @@ class TrainModel(ViewableScript):
         "epochs": 1000,
         "lr": 1000,
         "warmup": 1,
-        "degree": 2,
+        "degree": 1,
         "views": 4,
         "dc": {},
     }
@@ -59,7 +59,7 @@ class TrainModel(ViewableScript):
         with torch.no_grad():
             src_renders = self.get_renders(cameras)
         optimizer = torch.optim.Adam(
-            [*self.model.get_parameters(), bg_color], lr=config["lr"]
+            [*self.model.parameters(), bg_color], lr=config["lr"]
         )
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, config["warmup"], config["epochs"]
@@ -73,7 +73,7 @@ class TrainModel(ViewableScript):
             for i, cam in enumerate(cameras):
                 tgt_render = self.get_renders([cam], bg=bg_color)
                 tgt_x0 = dc.encode_image(tgt_render)
-                loss = dc(tgt_x0, src_x0[i].unsqueeze(0), src_dist[i])
+                loss = dc(tgt_x0, src_x0[i].unsqueeze(0), src_dist[i]) * 100000
                 loss.backward()
             for name, p in self.model.named_parameters():
                 print(

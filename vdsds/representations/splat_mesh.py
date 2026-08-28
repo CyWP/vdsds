@@ -1,7 +1,7 @@
 from __future__ import annotations
 import torch
 
-from typing import Dict, Tuple, Optional
+from typing import Any, Dict, Optional
 from torch import Tensor
 from jaxtyping import Float, Int, Bool
 
@@ -29,38 +29,72 @@ class SplatMesh(Model):
     ):
         super().__init__()
         self.mesh = mesh
-        self.register_buffer("faces", faces)
-        self.register_parameter("barys", barys)
-        self.register_parameter("disps", disps)
-        self.register_parameter("scales", scales)
-        self.register_parameter("rots", rots)
-        self.register_parameter("colors", colors)
-        self.register_buffer("sh_degree", sh_degree)
-        self.register_buffer("up", torch.tensor([0.0, 0.0, -1.0]))
+        self.faces = faces
+        self.barys = barys
+        self.disps = disps
+        self.scales = scales
+        self.rots = rots
+        self.colors = colors
+        self.sh_degree = sh_degree
+        self.up = torch.tensor([0.0, 0.0, -1.0])
         self.show_mesh = show_mesh
-        self.register_buffer("splat_height", torch.tensor(splat_height))
+        self.splat_height = torch.tensor(splat_height)
+
+    def _tensors(self) -> Dict[str, Tensor]:
+        return {
+            "faces": self.faces,
+            "barys": self.barys,
+            "disps": self.disps,
+            "scales": self.scales,
+            "rots": self.rots,
+            "colors": self.colors,
+            "up": self.up,
+            "splat_height": self.splat_height,
+        }
+
+    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+        self.faces = tensor_dict["faces"]
+        self.barys = tensor_dict["barys"]
+        self.disps = tensor_dict["disps"]
+        self.scales = tensor_dict["scales"]
+        self.rots = tensor_dict["rots"]
+        self.colors = tensor_dict["colors"]
+        self.up = tensor_dict["up"]
+        self.splat_height = tensor_dict["splat_height"]
+
+    def to(self, *args, **kwargs) -> SplatMesh:
+        super().to(*args, **kwargs)
+        self.mesh = self.mesh.to(*args, **kwargs)
+        return self
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mesh": self.mesh.to_dict(),
+            "faces": self.faces,
+            "barys": self.barys,
+            "disps": self.disps,
+            "scales": self.scales,
+            "rots": self.rots,
+            "colors": self.colors,
+            "sh_degree": self.sh_degree,
+            "show_mesh": self.show_mesh,
+            "splat_height": self.splat_height,
+        }
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> SplatMesh:
-        mesh_keys = {}
-        direct_keys = {}
-        for key, value in state_dict.items():
-            if key.startswith("mesh."):
-                mesh_keys[key[5:]] = value
-            else:
-                direct_keys[key] = value
-
-        mesh = Mesh.from_state_dict(mesh_keys)
+    def from_dict(cls, data: Dict[str, Any]) -> SplatMesh:
+        mesh = Mesh.from_dict(data["mesh"])
         return cls(
             mesh=mesh,
-            faces=direct_keys["faces"],
-            barys=direct_keys["barys"],
-            disps=direct_keys["disps"],
-            scales=direct_keys["scales"],
-            rots=direct_keys["rots"],
-            colors=direct_keys["colors"],
-            sh_degree=int(direct_keys["sh_degree"]),
-            splat_height=float(direct_keys["splat_height"]),
+            faces=data["faces"],
+            barys=data["barys"],
+            disps=data["disps"],
+            scales=data["scales"],
+            rots=data["rots"],
+            colors=data["colors"],
+            sh_degree=int(data["sh_degree"]),
+            show_mesh=data.get("show_mesh", True),
+            splat_height=float(data.get("splat_height", 0.0001)),
         )
 
     def __len__(self) -> int:
@@ -68,15 +102,16 @@ class SplatMesh(Model):
 
     def copy(self) -> SplatMesh:
         return SplatMesh(
-            self.mesh,
-            self.faces,
-            self.barys,
-            self.disps,
-            self.scales,
-            self.rots,
-            self.colors,
+            self.mesh.copy(),
+            self.faces.clone(),
+            self.barys.clone(),
+            self.disps.clone(),
+            self.scales.clone(),
+            self.rots.clone(),
+            self.colors.clone(),
             self.sh_degree,
             self.show_mesh,
+            float(self.splat_height),
         )
 
     @property
@@ -104,7 +139,6 @@ class SplatMesh(Model):
 
     @property
     def splat_areas(self) -> Float[Tensor, "N"]:
-        """This metric is dependent on area, but does not precisely represent area"""
         return self.scales[:, 0] * self.scales[:, 1]
 
     @property
@@ -140,9 +174,6 @@ class SplatMesh(Model):
 
     @property
     def make_splat(self) -> Splat:
-        """
-        Computes means, scales, and quats.
-        """
         return Splat(
             self.means_3d,
             self.quats_3d,
@@ -191,5 +222,5 @@ class SplatMesh(Model):
             - 1.25
         )
         return SplatMesh(
-            mesh, faces, barys, disps, scales, rots, colors, sh_degree=torch.tensor(0)
+            mesh, faces, barys, disps, scales, rots, colors, sh_degree=0
         )
