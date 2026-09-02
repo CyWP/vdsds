@@ -6,6 +6,7 @@ from PySide6.QtCore import QTimer
 
 from ..view import View
 from ..load import load_model
+from ..rasterizable import Rasterizable
 
 
 class Script:
@@ -40,7 +41,7 @@ class ViewableScript(Script):
         **kwargs,
     ):
         super().__init__()
-        self.model = load_model(model_path).to(device)
+        self.model = self.load_model(model_path).to(device)
         self.fps = fps
         self.close_on_finish = close_on_finish
         self.finish_on_close = finish_on_close
@@ -66,6 +67,9 @@ class ViewableScript(Script):
         self._closed.set()
         if self.finish_on_close:
             self.finish()
+
+    def load_model(self, path: str) -> Rasterizable:
+        return load_model(path)
 
     def launch(self) -> int:
         """

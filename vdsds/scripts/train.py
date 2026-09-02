@@ -16,9 +16,9 @@ from ..utils.img import Splimage
 class TrainModel(ViewableScript):
     _config_defaults = {
         "epochs": 1000,
-        "lr": 1000,
-        "warmup": 1,
-        "degree": 1,
+        "lr": 0.01,
+        "warmup": 10,
+        "degree": 0,
         "views": 4,
         "dc": {},
     }
@@ -34,15 +34,16 @@ class TrainModel(ViewableScript):
         config: Dict[str, Any] = {},
         **kwargs,
     ):
+        self.config = {**self._config_defaults, **config}
         super().__init__(
             model_path, fps, view, close_on_finish, finish_on_close, device
         )
-        self.config = {**self._config_defaults, **config}
-        if not isinstance(self.model, SplatMeshDeformation):
-            self.model = SplatMeshDeformation(
-                self.model, degree=self.config["degree"]
-            ).to(self.device)
-            self.view.model = self.model
+
+    def load_model(self, path: str):
+        model = super().load_model(path)
+        if not isinstance(model, SplatMeshDeformation):
+            model = SplatMeshDeformation(model, degree=self.config["degree"])
+        return model
 
     def run(self):
         config = self.config
@@ -56,8 +57,10 @@ class TrainModel(ViewableScript):
             ),
             use_wandb=False,
         )
+        self.model.train(train_model=False)
         with torch.no_grad():
             src_renders = self.get_renders(cameras)
+            ref_L = self.model.model.mesh.L_cotan_csr
         optimizer = torch.optim.Adam(
             [*self.model.parameters(), bg_color], lr=config["lr"]
         )
@@ -65,6 +68,7 @@ class TrainModel(ViewableScript):
             optimizer, config["warmup"], config["epochs"]
         )
         for e in range(config["epochs"]):
+            epoch_loss = 0.0
             optimizer.zero_grad()
             with torch.no_grad():
                 sr = self.apply_bg(src_renders, bg_color)
@@ -73,15 +77,22 @@ class TrainModel(ViewableScript):
             for i, cam in enumerate(cameras):
                 tgt_render = self.get_renders([cam], bg=bg_color)
                 tgt_x0 = dc.encode_image(tgt_render)
-                loss = dc(tgt_x0, src_x0[i].unsqueeze(0), src_dist[i]) * 100000
+                loss = dc(tgt_x0, src_x0[i].unsqueeze(0), src_dist[i])
                 loss.backward()
-            for name, p in self.model.named_parameters():
-                print(
-                    name, p.grad is not None, p.grad.norm() if p.grad is not None else 0
-                )
+                epoch_loss += loss.item()
+            loss = 1.0 * self.cotan_loss(ref_L)
+            loss.backward()
+            epoch_loss += loss.item()
             optimizer.step()
             scheduler.step()
-            print(f"[Epoch {e}] Loss: {loss.item()}")
+            print(f"[Epoch {e}] Loss: {epoch_loss}")
+
+    def cotan_loss(self, ref_L) -> torch.Tensor:
+        w = self.model.V_deform.weights
+        loss = torch.tensor(0.0, device=w.device)
+        for i in range(w.shape[1]):
+            loss += (((ref_L @ w[:, i]) ** 2) * 2**i).mean()
+        return loss
 
     def _get_orbit_cameras(self, views: int = 8) -> List[Camera]:
         cameras = []

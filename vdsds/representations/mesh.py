@@ -16,10 +16,11 @@ class Mesh(Model):
         self,
         V: Float[Tensor, "V 3"],
         F: Int[Tensor, "F 3"],
+        normalize: bool = True,
     ):
         super().__init__()
-        self.V = V
         self.F = F
+        self.V = V
 
     def _tensors(self) -> Dict[str, Tensor]:
         return {"V": self.V, "F": self.F}
@@ -320,9 +321,7 @@ class Mesh(Model):
         E = self.E
         nbhds = self.vertex_neighbours(E[edge_idx])
         nbhd_set = nbhds.flatten().unique()
-        return (
-            nbhds.numel() - nbhd_set.numel() == 2
-        )
+        return nbhds.numel() - nbhd_set.numel() == 2
 
     @torch.no_grad
     def collapse_edges(self, idx: torch.Tensor) -> Mesh:

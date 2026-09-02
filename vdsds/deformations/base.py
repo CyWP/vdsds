@@ -66,6 +66,11 @@ class Deformation(nn.Module, Rasterizable):
     def rasterize(self, camera: Camera) -> Float[Tensor, "B 4 H W"]:
         return self.deformed(camera).rasterize(camera)
 
+    def to(self, *args, **kwargs) -> Deformation:
+        super().to(*args, **kwargs)
+        self.model.to(*args, **kwargs)
+        return self
+
     def train(self, train_model: bool = False):
         self.requires_grad_(True)
         self.model.requires_grad_(False)

@@ -221,6 +221,4 @@ class SplatMesh(Model):
             texture.image_sample((emb * barys.unsqueeze(-1)).sum(dim=1))[0, :, :3] * 2.5
             - 1.25
         )
-        return SplatMesh(
-            mesh, faces, barys, disps, scales, rots, colors, sh_degree=0
-        )
+        return SplatMesh(mesh, faces, barys, disps, scales, rots, colors, sh_degree=0)
