@@ -15,7 +15,7 @@ def load_model(path: str):
     if extension == ".obj":
         return SplatMesh.from_mesh_data(**load_obj(path))
     if extension == ".glb":
-        # return TexturedMesh.from_mesh_data(**load_glb(path))
+        return TexturedMesh.from_mesh_data(**load_glb(path))
         return SplatMesh.from_mesh_data(**load_glb(path))
     if extension == ".ply":
         return Splat(**load_ply(path))

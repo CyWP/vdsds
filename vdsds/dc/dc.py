@@ -357,7 +357,15 @@ class DC(object):
         else:
             return loss
 
-    def run_sdedit(self, x0, tgt_prompt=None, num_inference_steps=20, skip=7, eta=0):
+    def run_sdedit(
+        self,
+        x0,
+        tgt_prompt=None,
+        num_inference_steps=20,
+        skip=7,
+        eta=0,
+        image_latent=None,
+    ):
         scheduler = self.scheduler
         scheduler.set_timesteps(num_inference_steps)
         timesteps = scheduler.timesteps
@@ -372,14 +380,22 @@ class DC(object):
         self.update_text_features(None, tgt_prompt=tgt_prompt)
         tgt_text_embedding = self.tgt_text_feature
         null_text_embedding = self.null_text_feature
-        text_embeddings = torch.cat([tgt_text_embedding, null_text_embedding], dim=0)
+
+        if image_latent is None:
+            image_latent = x0
 
         op = timesteps[-S:]
 
         for t in op:
-            xt_input = torch.cat([xt] * 2)
+            # IP2P expects the input latent concatenated with the image
+            # conditioning along the channel dim (8 channels total).
+            latent_model_input = torch.cat([xt, image_latent], dim=1)
+            text_embeddings = torch.cat(
+                [tgt_text_embedding, null_text_embedding], dim=0
+            )
+            latent_model_input = torch.cat([latent_model_input] * 2, dim=0)
             noise_pred = self.unet.forward(
-                xt_input,
+                latent_model_input,
                 torch.cat([t[None]] * 2).to(self.device),
                 encoder_hidden_states=text_embeddings,
             ).sample

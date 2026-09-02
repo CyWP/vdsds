@@ -7,6 +7,7 @@ import yaml
 
 from .scripts.view_model import ViewModel
 from .scripts.train import TrainModel
+from .scripts.refine import RefineModel
 
 
 def load_config(path: str) -> dict:
@@ -41,6 +42,8 @@ def main(args, config):
         ViewModel(model_path=model_path, device=device).launch()
     elif task == "train":
         TrainModel(model_path=model_path, device=device, config=config).launch()
+    elif task == "refine":
+        RefineModel(model_path=model_path, device=device, config=config).launch()
     else:
         raise ValueError(f"Task '{task}' is unrecognized.")
 
