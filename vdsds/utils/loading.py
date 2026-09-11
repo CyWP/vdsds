@@ -82,8 +82,13 @@ def load_obj(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
 
 def load_glb(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
     assert path.suffix == ".glb"
-    scene = trimesh.load(path, force="scene")
-    mesh = list(scene.geometry.values())[0]
+    mesh = trimesh.load(path, force="mesh")
+    # mesh = mesh.subdivide(iterations=1)
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    mesh.process(validate=True)
+    # mesh = list(scene.geometry.values())[0]
+    # meshes = list(scene.geometry.values())
+    # mesh = trimesh.util.concatenate(meshes)
     V = torch.tensor(mesh.vertices, dtype=torch.float32)
     F = torch.tensor(mesh.faces, dtype=torch.long)
     uv_co = None
@@ -92,10 +97,11 @@ def load_glb(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
     if mesh.visual.kind == "texture" and mesh.visual.uv is not None:
         uv_co = torch.tensor(mesh.visual.uv, dtype=torch.float32)
         uv_co[:, 1] = 1 - uv_co[:, 1]
+        # uv_co = torch.stack([1 - uv_co[:, 1], 1 - uv_co[:, 0]], dim=1)
         uv_idx = F.clone()
         mtl = Splimage(mesh.visual.material.baseColorTexture)
-    V[:, 2] *= -1
-    V = torch.stack([V[:, 1], V[:, 0], V[:, 2]], dim=1)
+    # V[:, 2] *= -1
+    V = torch.stack([V[:, 2], V[:, 0], -V[:, 1]], dim=1)
     return {
         "V": V,
         "F": F,

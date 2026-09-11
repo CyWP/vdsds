@@ -4,7 +4,7 @@ from typing import Tuple
 
 from PySide6.QtCore import QObject, Qt, Signal, QPoint
 from PySide6.QtGui import QKeyEvent, QImage, QPixmap, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QMainWindow, QSizePolicy, QLabel
+from PySide6.QtWidgets import QMainWindow, QSizePolicy, QLabel, QDockWidget, QPushButton, QWidget, QVBoxLayout
 
 
 class AppView(QObject):
@@ -56,6 +56,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.viewport)
         viewport_rect = self.viewport.rect()  # QRect(0,0,width,height)
         global_pos = self.viewport.mapTo(self, viewport_rect.topLeft())
+
+        # ----- Right dock -----
+        dock = QDockWidget("Controls", self)
+        dock.setAllowedAreas(Qt.RightDockWidgetArea)
+        dock_widget = QWidget()
+        dock_layout = QVBoxLayout(dock_widget)
+        self.view_deformation_btn = QPushButton("View Deformation")
+        self.view_deformation_btn.setCheckable(True)
+        self.view_deformation_btn.setChecked(True)
+        dock_layout.addWidget(self.view_deformation_btn)
+        self.record_btn = QPushButton("Record")
+        self.record_btn.setCheckable(True)
+        self.record_btn.setChecked(False)
+        dock_layout.addWidget(self.record_btn)
+        dock_layout.addStretch()
+        dock.setWidget(dock_widget)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
         # Optional: start maximized now that geometry is set
         self.showMaximized()

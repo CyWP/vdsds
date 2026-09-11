@@ -4,7 +4,7 @@ from .utils.loading import load_glb, load_obj, load_ply
 from .representations.splat import Splat
 from .representations.splat_mesh import SplatMesh
 from .representations.textured_mesh import TexturedMesh
-from .deformations.splat_mesh_deform import SplatMeshDeformation
+from .representations.vertextured_mesh import VerTexturedMesh
 
 
 def load_model(path: str):
@@ -15,6 +15,7 @@ def load_model(path: str):
     if extension == ".obj":
         return SplatMesh.from_mesh_data(**load_obj(path))
     if extension == ".glb":
+        return VerTexturedMesh.from_mesh_data(**load_glb(path))
         return TexturedMesh.from_mesh_data(**load_glb(path))
         return SplatMesh.from_mesh_data(**load_glb(path))
     if extension == ".ply":

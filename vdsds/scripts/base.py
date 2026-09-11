@@ -115,6 +115,9 @@ class ViewableScript(Script):
             self.finish()
         QTimer.singleShot(0, self.view.close)
 
+    def set_background(self, *args, **kwargs):
+        self.view.viewer.set_background(*args, **kwargs)
+
     def run(self):
         raise NotImplementedError
 

@@ -1,19 +1,25 @@
 import torch
 import math
+import os
+import time
 
-from typing import Optional, List
+from typing import Optional, List, Union
+from pathlib import Path
 from jaxtyping import Float
 from torch import Tensor
+from PIL import Image
 
-from ..rasterizable import Rasterizable
+from ..deformations.base import Deformation
+from ..representations.base import Model
 from ..utils.camera import Camera
+from ..utils.img import Splimage, ImgUtils
 from .keymap import K_SHIFT, K_CTRL
 
 
 class ObjViewer:
     def __init__(
         self,
-        obj: Rasterizable,
+        obj: Model | Deformation,
         camera: Optional[Camera] = None,
         sensitivity: float = 60.0,
     ):
@@ -28,6 +34,72 @@ class ObjViewer:
         self.tran_y: int = 0
         self.roll_x: int = 0
         self.roll_y: int = 0
+        self.view_deformed = True
+        self._bg_color: Optional[Tensor] = None
+        self._bg_image: Optional[Splimage] = None
+        self._recording = False
+        self._record_dir: Optional[Path] = None
+        self._frame_idx: int = 0
+
+    def start_recording(self, output_dir: str = ".") -> None:
+        self._record_dir = Path(output_dir) / f"recording_{time.time():.0f}"
+        self._record_dir.mkdir(parents=True, exist_ok=True)
+        self._frame_idx = 0
+        self._recording = True
+
+    def stop_recording(self) -> Optional[Path]:
+        self._recording = False
+        path = self._record_dir
+        self._record_dir = None
+        self._frame_idx = 0
+        return path
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def _save_frame(self, render: Float[Tensor, "B 4 H W"]) -> None:
+        if not self._recording or self._record_dir is None:
+            return
+        img = ImgUtils.tensor2pil(render[:, :3].clamp(0, 1))
+        path = self._record_dir / f"{self._frame_idx:06d}.png"
+        img.save(str(path))
+        self._frame_idx += 1
+
+    def set_background(self, bg: Union[Tensor, Splimage, None]) -> None:
+        if bg is None:
+            self._bg_color = None
+            self._bg_image = None
+        elif isinstance(bg, Splimage):
+            self._bg_color = None
+            self._bg_image = bg.to(self.obj.device)
+        elif isinstance(bg, Tensor):
+            self._bg_image = None
+            self._bg_color = bg.flatten().to(self.obj.device)
+        else:
+            raise TypeError(f"Expected Tensor, Splimage, or None, got {type(bg).__name__}")
+
+    def _apply_background(
+        self, render: Float[Tensor, "B 4 H W"]
+    ) -> Float[Tensor, "B 4 H W"]:
+        B, C, H, W = render.shape
+        rgb = render[:, :3]
+        alpha = render[:, 3:4]
+
+        if self._bg_image is not None:
+            bg = self._bg_image.image().to(render.device)
+            if bg.shape[2] != H or bg.shape[3] != W:
+                bg = ImgUtils.resize(bg, H, W)
+            if bg.shape[0] < B:
+                bg = bg.expand(B, -1, -1, -1)
+            bg = bg[:, :3]
+        elif self._bg_color is not None:
+            bg = self._bg_color.view(1, 3, 1, 1).expand(B, -1, H, W)
+        else:
+            return render
+
+        composited = (alpha * rgb + (1 - alpha) * bg).clamp(0, 1)
+        return torch.cat([composited, torch.ones_like(alpha)], dim=1)
 
     @torch.no_grad()
     def get_render(self, H: int, W: int) -> Float[Tensor, "B 4 H W"]:
@@ -36,8 +108,12 @@ class ObjViewer:
         self.check_rotation()
         self.check_roll()
         self.check_translation()
-        render = self.obj.rasterize(self.camera)
-        # render = Float[Tensor, "B 4 H W"].fill_background(render, self.bg_color)
+        if isinstance(self.obj, Deformation) and not self.view_deformed:
+            render = self.obj.model.rasterize(self.camera)
+        else:
+            render = self.obj.rasterize(self.camera)
+        render = self._apply_background(render)
+        self._save_frame(render)
         return render
 
     def check_rotation(self):

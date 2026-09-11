@@ -15,11 +15,13 @@ class SphericalHarmonic(nn.Module):
         num_dims: int,
         batch_size: int,
         weights: Optional[Tensor[Float, "B W"]] = None,
+        start_degree: int = 0,
     ):
         super().__init__()
         self.degree = degree
         self.num_coeffs = (degree + 1) ** 2
         self.num_dims = num_dims
+        self.start_degree = start_degree
         self.batch_size = batch_size
 
         # Each batch element has its own weights: [B, num_dims, num_coeffs]
@@ -29,7 +31,7 @@ class SphericalHarmonic(nn.Module):
             (
                 weights
                 if weights is not None
-                else torch.randn(batch_size, num_dims, self.num_coeffs) * 0.001
+                else torch.zeros(batch_size, num_dims, self.num_coeffs)
             ),
         )
         self.register_buffer("ones_shape", torch.ones((self.batch_size, 1)))
@@ -39,8 +41,11 @@ class SphericalHarmonic(nn.Module):
         weights = state_dict["weights"]
         batch_size, num_dims, num_coeffs = weights.shape
         degree = int(math.sqrt(num_coeffs)) - 1
-        return cls(
-            degree=degree, num_dims=num_dims, batch_size=batch_size, weights=weights
+        return SphericalHarmonic(
+            degree=degree,
+            num_dims=num_dims,
+            batch_size=batch_size,
+            weights=weights,
         )
 
     def copy(self) -> SphericalHarmonic:
@@ -48,6 +53,7 @@ class SphericalHarmonic(nn.Module):
             degree=self.degree,
             num_dims=self.num_dims,
             batch_size=self.batch_size,
+            start_degree=self.start_degree,
             weights=self.weights.clone(),
         )
 
@@ -103,7 +109,12 @@ class SphericalHarmonic(nn.Module):
 
         basis = []
         for l in range(self.degree + 1):
+            zero_block = torch.zeros_like(x) if l < self.start_degree else None
             for m in range(-l, l + 1):
+                if zero_block is not None:
+                    # Skipped degree: fill with zeros (coeffs unused).
+                    basis.append(zero_block)
+                    continue
                 m_abs = abs(m)
                 norm = math.sqrt(
                     ((2 * l + 1) / (4 * math.pi))
@@ -130,6 +141,16 @@ class SphericalHarmonic(nn.Module):
         # multiply and sum coeff dim
         out = (Y * W).sum(dim=-1)  # [B,N,num_dims]
         return out.squeeze(dim=1)
+
+    def forward(
+        self,
+        theta: Float[Tensor, "N ..."],
+        phi: Float[Tensor, "N ..."],
+        cartesian_co: bool = False,
+    ) -> Float[Tensor, "B N Ndims"]:
+        if cartesian_co:
+            return self.from_cartesian(theta)
+        return self.from_polar(theta, phi)
 
     def laplace_beltrami(self) -> Float[Tensor, "B N"]:
         out = torch.empty_like(self.weights)

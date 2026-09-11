@@ -86,7 +86,7 @@ class TrainModel(ViewableScript):
                 loss = dc(tgt_x0, src_x0[i].unsqueeze(0), src_dist[i])
                 loss.backward()
                 epoch_loss += loss.item()
-            loss = 100.0 * self.cotan_loss(ref_L)
+            loss = 0.01 * self.cotan_loss(ref_L)
             loss.backward()
             epoch_loss += loss.item()
             torch.nn.utils.clip_grad_norm_(
@@ -97,15 +97,11 @@ class TrainModel(ViewableScript):
             print(f"[Epoch {e}] Loss: {epoch_loss}")
 
     def cotan_loss(self, ref_L) -> torch.Tensor:
-        # Regularize the actual per-vertex displacement field, not the raw SH
-        # coefficients. The displacement is what visually deforms the mesh.
-        # A canonical viewing direction is used; for degree 0 the displacement
-        # is direction-independent (only the l=0 constant band contributes).
-        centroid = self.model.model.centroid.detach()
-        delta = (centroid - torch.tensor([0.0, 0.0, 1.0], device=centroid.device))
-        disp = self.model.V_deform.from_cartesian(delta)
-        laplacian = ref_L @ disp
-        return (laplacian ** 2).mean()
+        w = self.model.V_deform.weights
+        loss = torch.tensor(0.0, device=w.device)
+        for i in range(w.shape[1]):
+            loss += (((ref_L @ w[:, i]) ** 2) * 2**i).sum()
+        return loss
 
     def _get_orbit_cameras(self, views: int = 8) -> List[Camera]:
         cameras = []

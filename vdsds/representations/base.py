@@ -4,7 +4,7 @@ import torch
 
 from jaxtyping import Float
 from torch import Tensor
-from typing import Dict, List, Type
+from typing import Dict, List, Any
 
 from ..utils.camera import Camera
 
@@ -49,8 +49,8 @@ class Model:
     def parameters(self) -> List[Tensor]:
         return [v for v in self._tensors().values() if v.is_floating_point()]
 
-    def to_dict(self) -> Dict[str, Tensor]:
-        raise NotImplementedError
+    def to_dict(self) -> Dict[str, Any]:
+        return {"class": type(self).__name__}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Tensor]) -> Model:

@@ -50,6 +50,18 @@ class View(QApplication):
         if self.on_close is not None:
             w.closed.connect(self.on_close)
         self.frame_ready.connect(self.window.update)
+        self.window.window.view_deformation_btn.toggled.connect(
+            lambda checked: setattr(self.viewer, 'view_deformed', checked)
+        )
+        self.window.window.record_btn.toggled.connect(self._toggle_recording)
+
+    def _toggle_recording(self, checked: bool):
+        if checked:
+            self.viewer.start_recording()
+        else:
+            path = self.viewer.stop_recording()
+            if path:
+                print(f"Recording saved to {path}")
 
     def close(self):
         self.frame_retriever.stop()

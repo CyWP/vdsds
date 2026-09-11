@@ -8,6 +8,9 @@ import yaml
 from .scripts.view_model import ViewModel
 from .scripts.train import TrainModel
 from .scripts.refine import RefineModel
+from .scripts.train_sds import TrainModelSDS
+
+from easydict import EasyDict as edict
 
 
 def load_config(path: str) -> dict:
@@ -44,10 +47,12 @@ def main(args, config):
         TrainModel(model_path=model_path, device=device, config=config).launch()
     elif task == "refine":
         RefineModel(model_path=model_path, device=device, config=config).launch()
+    elif task == "train_sds":
+        TrainModelSDS(model_path=model_path, device=device, config=config).launch()
     else:
         raise ValueError(f"Task '{task}' is unrecognized.")
 
 
 if __name__ == "__main__":
     args, config = parse_args()
-    main(args, config)
+    main(args, edict(**config))

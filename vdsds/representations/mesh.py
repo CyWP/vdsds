@@ -1,5 +1,6 @@
 from __future__ import annotations
 import torch
+import nvdiffrast.torch as dr
 
 from typing import Any, Dict, Tuple, Optional
 from torch import Tensor
@@ -16,21 +17,46 @@ class Mesh(Model):
         self,
         V: Float[Tensor, "V 3"],
         F: Int[Tensor, "F 3"],
-        normalize: bool = True,
     ):
         super().__init__()
         self.F = F
         self.V = V
+        self.opengl_conversion = torch.tensor(
+            [
+                [1, 0, 0, 0],
+                [0, -1, 0, 0],
+                [0, 0, -1, 0],
+                [0, 0, 0, 1],
+            ],
+            dtype=torch.float32,
+            device=V.device,
+        )
+        self.up = torch.tensor([0, 0, 1], device=V.device, dtype=torch.float32)
+        self.ctx = dr.RasterizeCudaContext()
 
     def _tensors(self) -> Dict[str, Tensor]:
-        return {"V": self.V, "F": self.F}
+        return {
+            "V": self.V,
+            "F": self.F,
+            "opengl_conversion": self.opengl_conversion,
+            "up": self.up,
+        }
 
     def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
         self.V = tensor_dict["V"]
         self.F = tensor_dict["F"]
+        self.opengl_conversion = tensor_dict["opengl_conversion"]
+        self.up = tensor_dict["up"]
+
+    def to(self, *args, **kwargs) -> Mesh:
+        super().to(*args, **kwargs)
+        device = self.device
+        if device.type == "cuda":
+            self.ctx = dr.RasterizeCudaContext()
+        return self
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"V": self.V, "F": self.F}
+        return {**super().to_dict(), "V": self.V, "F": self.F}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Mesh:
@@ -313,6 +339,9 @@ class Mesh(Model):
         self.F = F[has_both]
         return self
 
+    def vertex_normal_alignment(self, vec: Float[Tensor, "N 3"]) -> Float[Tensor, "N"]:
+        return (self.vertex_normals_normalized * vec).sum(dim=1)
+
     def vertex_neighbours(self, v_idx: Int[Tensor, "V"]) -> Int[Tensor, "E"]:
         A_ptr, A_vals = self.adjacency
         return A_vals[A_ptr[v_idx] : A_ptr[v_idx + 1]]
@@ -401,5 +430,91 @@ class Mesh(Model):
         colors = torch.ones_like(scales).unsqueeze(1)
         return Splat(means, quats, scales, opacities, colors, 0)
 
-    def rasterize(self, camera: Camera) -> Float[Tensor, "B 4 H W"]:
-        return self.make_wireframe.rasterize(camera)
+    def camera_to_nvdiffrast(self, camera):
+        device = self.device
+        dtype = camera.w2c.dtype
+
+        # Rotate the camera's orbital coordinate system:
+        #
+        # camera's default position:
+        #     (0, 0, -r)
+        #
+        # becomes:
+        #     (0, -r, 0)
+        #
+        # This is a +90° rotation around world X.
+        world_adjust = torch.tensor(
+            [
+                [1, 0, 0, 0],
+                [0, 0, -1, 0],
+                [0, 1, 0, 0],
+                [0, 0, 0, 1],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+
+        # Your camera convention:
+        #   +X right
+        #   +Y down
+        #   +Z forward
+        #
+        # OpenGL:
+        #   +X right
+        #   +Y up
+        #   -Z forward
+        gl_conversion = torch.diag(
+            torch.tensor(
+                [1.0, -1.0, -1.0, 1.0],
+                dtype=dtype,
+                device=device,
+            )
+        )
+
+        fx = camera.Fx
+        fy = camera.Fx
+
+        projection = torch.zeros(
+            (4, 4),
+            dtype=dtype,
+            device=device,
+        )
+
+        projection[0, 0] = 2 * fx / camera.W
+        projection[1, 1] = -2 * fy / camera.H
+
+        zn = camera.Zn
+        zf = camera.Zf
+
+        projection[2, 2] = -(zf + zn) / (zf - zn)
+        projection[2, 3] = -2 * zf * zn / (zf - zn)
+        projection[3, 2] = -1
+
+        return projection @ gl_conversion @ camera.w2c @ world_adjust
+
+    @property
+    def VH(self) -> Float[Tensor, "V 4"]:
+        return torch.cat(
+            [self.V, torch.ones(self.V.shape[0], 1, device=self.V.device)], dim=1
+        )
+
+    def rasterize(
+        self, camera: Camera, antialias: bool = True
+    ) -> Float[Tensor, "B 4 H W"]:
+        raise NotImplementedError
+
+    @classmethod
+    def from_mesh_data(
+        cls,
+        V: Float[Tensor, "V 3"],
+        F: Int[Tensor, "F 3"],
+        unit_box: bool = True,
+        **kwargs,
+    ) -> Mesh:
+        if unit_box:
+            V_min, V_max = V.min(dim=0).values, V.max(dim=0).values
+            V_extent = V_max - V_min
+            V_center = (V_max + V_min) / 2
+            V = (V - V_center) / V_extent.max()
+        V = torch.stack([V[:, 1], V[:, 0], -V[:, 2]], dim=1)
+        return cls(V, F, **kwargs)
