@@ -16,7 +16,6 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-import cv2
 from typing import Optional, Union, Tuple, List, Callable, Dict
 from tqdm import tqdm
 import torch.nn.functional as F

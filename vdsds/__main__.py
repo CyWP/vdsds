@@ -6,8 +6,6 @@ import torch
 import yaml
 
 from .scripts.view_model import ViewModel
-from .scripts.train import TrainModel
-from .scripts.refine import RefineModel
 from .scripts.train_sds import TrainModelSDS
 
 from easydict import EasyDict as edict
@@ -44,10 +42,6 @@ def main(args, config):
     if task == "view":
         ViewModel(model_path=model_path, device=device).launch()
     elif task == "train":
-        TrainModel(model_path=model_path, device=device, config=config).launch()
-    elif task == "refine":
-        RefineModel(model_path=model_path, device=device, config=config).launch()
-    elif task == "train_sds":
         TrainModelSDS(model_path=model_path, device=device, config=config).launch()
     else:
         raise ValueError(f"Task '{task}' is unrecognized.")

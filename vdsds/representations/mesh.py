@@ -7,7 +7,6 @@ from torch import Tensor
 from jaxtyping import Float, Int
 
 from .base import Model
-from .splat import Splat
 from ..utils.quaternion import Quaternion
 from ..utils.camera import Camera
 
@@ -396,39 +395,6 @@ class Mesh(Model):
         emb_data = data[F]
         b_co = b_co.unsqueeze(-1)
         return (emb_data * b_co).sum(dim=1)
-
-    @property
-    def make_wireframe(self) -> Splat:
-        E = self.E
-        V = self.V
-        nV = self.num_V
-        nE = self.num_E
-        vertex_normals = self.vertex_normals_normalized
-        device = self.device
-        splat_scale = 0.005
-        endpoints = (V + 0.01 * vertex_normals)[E]
-        midpoints = endpoints.mean(dim=1)
-        means = torch.cat([V, midpoints], dim=0)
-        directions = endpoints[:, 0] - endpoints[:, 1]
-        lengths = (directions).norm(dim=1)
-        scales_endpoints = torch.full_like(V, splat_scale / 10)
-        scales_midpoints = (
-            torch.tensor([splat_scale / 100] * 3, device=device)
-            .unsqueeze(0)
-            .repeat(midpoints.shape[0], 1)
-        )
-        scales_midpoints[:, 2] = lengths * splat_scale * 80
-        scales = torch.cat([scales_endpoints, scales_midpoints], dim=0)
-        quats_endpoints = (
-            torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
-            .unsqueeze(0)
-            .expand(nV, -1)
-        )
-        quats_midpoints = Quaternion.vector_alignment(scales_midpoints, directions)
-        quats = torch.cat([quats_endpoints, quats_midpoints], dim=0)
-        opacities = torch.tensor([1.0], device=device).expand(nV + nE)
-        colors = torch.ones_like(scales).unsqueeze(1)
-        return Splat(means, quats, scales, opacities, colors, 0)
 
     def camera_to_nvdiffrast(self, camera):
         device = self.device

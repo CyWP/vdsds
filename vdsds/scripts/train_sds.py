@@ -2,20 +2,18 @@ import math
 
 import torch
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, ClassVar
 from jaxtyping import Float
 from torch import Tensor
 
 from .base import ViewableScript
 from ..utils.camera import Camera
 from ..utils.quaternion import Quaternion
-from ..deformations.splat_mesh_deform import SplatMeshDeformation
 from ..deformations.textured_mesh_deform import TexturedMeshDeformation
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..deformations.colored_mesh_jacobian_deform import ColoredMeshJacobianDeformation
 from ..representations.textured_mesh import TexturedMesh
 from ..representations.vertextured_mesh import VerTexturedMesh
-from ..representations.splat_mesh import SplatMesh
 from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.img import Splimage
 
@@ -23,7 +21,7 @@ from easydict import EasyDict as edict
 
 
 class TrainModelSDS(ViewableScript):
-    _config_defaults = {
+    _config_defaults: ClassVar = {
         "epochs": 200,
         "lr": 0.025,
         "sds_alpha": 1.0,
@@ -69,12 +67,6 @@ class TrainModelSDS(ViewableScript):
             )
         if isinstance(model, TexturedMesh):
             model = MeshJacobianDeformation(
-                model,
-                degree=self.config["degree"],
-                start_degree=self.config["start_degree"],
-            )
-        if isinstance(model, SplatMesh):
-            model = SplatMeshDeformation(
                 model,
                 degree=self.config["degree"],
                 start_degree=self.config["start_degree"],

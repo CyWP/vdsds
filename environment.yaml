@@ -15,7 +15,6 @@ dependencies:
   - jaxtyping
   - ninja
   - rich
-  - gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
   - pillow
   - triangle
   - plyfile
