@@ -7,6 +7,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..utils.camera import Camera
+from ..utils.light import LightSource
 
 
 class Model:
@@ -65,8 +66,8 @@ class Model:
     def centroid(self) -> torch.Tensor:
         raise NotImplementedError()
 
-    def rasterize(self, camera: Camera) -> Float[Tensor, "B 4 H W"]:
+    def rasterize(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
         raise NotImplementedError()
 
-    def forward(self, camera: Camera) -> Float[Tensor, "B 4 H W"]:
-        return self.rasterize(camera)
+    def forward(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
+        return self.rasterize(camera, light)

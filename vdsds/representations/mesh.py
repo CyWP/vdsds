@@ -8,6 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from ..utils.camera import Camera
+from ..utils.light import LightSource
 from .base import Model
 
 
@@ -16,10 +17,16 @@ class Mesh(Model):
         self,
         V: Float[Tensor, "V 3"],
         F: Int[Tensor, "F 3"],
+        texture: Float[Tensor, 3] | None = None,
     ):
         super().__init__()
         self.F = F
         self.V = V
+        self.texture = (
+            torch.tensor([0.5, 0.5, 0.5], device=V.device)
+            if texture is None
+            else texture
+        )
         self.opengl_conversion = torch.tensor(
             [
                 [1, 0, 0, 0],
@@ -37,6 +44,7 @@ class Mesh(Model):
         return {
             "V": self.V,
             "F": self.F,
+            "texture": self.texture,
             "opengl_conversion": self.opengl_conversion,
             "up": self.up,
         }
@@ -44,6 +52,7 @@ class Mesh(Model):
     def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         self.V = tensor_dict["V"]
         self.F = tensor_dict["F"]
+        self.texture = tensor_dict["texture"]
         self.opengl_conversion = tensor_dict["opengl_conversion"]
         self.up = tensor_dict["up"]
 
@@ -55,16 +64,15 @@ class Mesh(Model):
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return {**super().to_dict(), "V": self.V, "F": self.F}
+        return {**super().to_dict(), "V": self.V, "F": self.F, "texture": self.texture}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Mesh:
-        return cls(V=data["V"], F=data["F"])
+        return cls(V=data["V"], F=data["F"], texture=data["texture"])
 
     def copy(self) -> Mesh:
-        return Mesh(
-            V=self.V.clone(),
-            F=self.F.clone(),
+        return self.__class__(
+            V=self.V.clone(), F=self.F.clone(), texture=self.texture.clone()
         )
 
     def __len__(self) -> int:
@@ -529,10 +537,38 @@ class Mesh(Model):
             [self.V, torch.ones(self.V.shape[0], 1, device=self.V.device)], dim=1
         )
 
+    def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
+        return dr.interpolate(self.texture[None].expand(self.num_V, 3), rast, self.F)[0]
+
+    def lambert_shade(
+        self,
+        rast,
+        albedo_map: Float[Tensor, "B H W 4"],
+        camera: Camera,
+        light: LightSource,
+    ) -> Float[Tensor, "B H W 4"]:
+        normal_map = dr.interpolate(self.vertex_normals, rast, self.F)
+        pos_map = dr.interpolate(self.V, rast, self.F)
+        delta_map = pos_map - camera.origin[None, None, None]
+        ray_map = pos_map - light.origin[None, None, None]
+        align_map = (delta_map * normal_map).sum(dim=-1)
+        normal_map = torch.where(align_map < 0, -normal_map, normal_map)
+        return albedo_map * light.strength * (ray_map * normal_map).sum(dim=-1)
+
     def rasterize(
-        self, camera: Camera, antialias: bool = True
+        self, camera: Camera, light: LightSource, antialias: bool = True
     ) -> Float[Tensor, "B 4 H W"]:
-        raise NotImplementedError
+        pos_clip = self.VH @ self.camera_to_nvdiffrast(camera).T
+        rast, _ = dr.rasterize(self.ctx, pos_clip[None], self.F, [camera.H, camera.W])
+        rgb = self.lambert_shade(rast, self.raster_albedo(rast), camera, light)
+        rgba = torch.cat(
+            [rgb, torch.ones((*rgb.shape[:3], 1), device=rgb.device)], dim=-1
+        )
+        rgba = torch.where(rast[..., 3:4] > 0, rgba, torch.zeros_like(rgba))
+        if antialias:
+            pos_clip_batched = pos_clip[None] if pos_clip.ndim == 2 else pos_clip
+            rgba = dr.antialias(rgba, rast, pos_clip_batched, self.F)
+        return rgba.permute(0, 3, 1, 2)
 
     @classmethod
     def from_mesh_data(

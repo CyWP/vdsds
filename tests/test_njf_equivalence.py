@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 import torch
-from vdsds.utils.poisson_system import PoissonSystem
 
+from vdsds.utils.poisson_system import PoissonSystem
 from vdsds.utils.poisson_system_bak import poisson_system_matrices_from_mesh
 
 pytest.importorskip("igl")
