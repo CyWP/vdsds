@@ -173,6 +173,71 @@ class Mesh(Model):
         return normals / normals.norm(dim=1, keepdim=True)
 
     @property
+    def grad_operator(self) -> Float["F V 3"]:
+        """
+        V: (V, 3) vertex positions
+        F: (F, 3) face indices
+
+        Returns:
+            G: sparse COO tensor of shape (F, V, 3)
+            such that G @ vertex_scalars -> per-face gradients.
+        """
+        V = self.V
+        F = self.F
+        p0 = V[F[:, 0]]
+        p1 = V[F[:, 1]]
+        p2 = V[F[:, 2]]
+
+        e1 = p1 - p0
+        e2 = p2 - p0
+
+        n = torch.cross(e1, e2, dim=-1)
+        area2 = n.norm(dim=-1, keepdim=True)
+
+        grad_phi0 = torch.cross(n, p2 - p1, dim=-1) / area2
+        grad_phi1 = torch.cross(n, p0 - p2, dim=-1) / area2
+        grad_phi2 = torch.cross(n, p1 - p0, dim=-1) / area2
+
+        # (F, 3, 3)
+        values = torch.stack(
+            [
+                grad_phi0,
+                grad_phi1,
+                grad_phi2,
+            ],
+            dim=1,
+        )
+
+        # Indices for (face, vertex, xyz)
+        face_idx = torch.arange(F.shape[0], device=F.device)[:, None, None].expand(
+            -1, 3, 3
+        )
+
+        vertex_idx = F[:, :, None].expand(-1, -1, 3)
+
+        xyz_idx = torch.arange(3, device=F.device)[None, None, :].expand(
+            F.shape[0], 3, -1
+        )
+
+        indices = torch.stack(
+            [
+                face_idx.reshape(-1),
+                vertex_idx.reshape(-1),
+                xyz_idx.reshape(-1),
+            ]
+        )
+
+        G = torch.sparse_coo_tensor(
+            indices,
+            values.reshape(-1),
+            size=(F.shape[0], V.shape[0], 3),
+            device=V.device,
+            dtype=V.dtype,
+        )
+
+        return G.coalesce()
+
+    @property
     def L_cotan(self) -> Float[Tensor, "V V"]:
         F = self.F
         V = self.V
@@ -232,7 +297,7 @@ class Mesh(Model):
         return L
 
     @property
-    def adjacency(self) -> tuple[Int[Tensor, V+1], Int[Tensor, "2E"]]:
+    def adjacency(self) -> tuple[Int[Tensor, V + 1], Int[Tensor, "2E"]]:
         F = self.F
         nV = self.num_V
         i = torch.cat([F[:, 0], F[:, 1], F[:, 2]])

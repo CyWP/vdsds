@@ -6,10 +6,7 @@ from easydict import EasyDict as edict
 from jaxtyping import Float
 from torch import Tensor
 
-from ..deformations.colored_mesh_jacobian_deform import ColoredMeshJacobianDeformation
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
-from ..representations.textured_mesh import TexturedMesh
-from ..representations.vertextured_mesh import VerTexturedMesh
 from ..utils.camera import Camera
 from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.quaternion import Quaternion
@@ -54,20 +51,11 @@ class TrainModelSDS(ViewableScript):
         )
 
     def load_model(self, path: str):
-        model = super().load_model(path)
-        if isinstance(model, VerTexturedMesh):
-            model = ColoredMeshJacobianDeformation(
-                model,
-                degree=self.config["degree"],
-                start_degree=self.config["start_degree"],
-            )
-        if isinstance(model, TexturedMesh):
-            model = MeshJacobianDeformation(
-                model,
-                degree=self.config["degree"],
-                start_degree=self.config["start_degree"],
-            )
-        return model
+        return MeshJacobianDeformation(
+            super().load_model(path),
+            degree=self.config["degree"],
+            start_degree=self.config["start_degree"],
+        )
 
     def run(self):
         device = self.device
