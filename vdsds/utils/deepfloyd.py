@@ -1,15 +1,14 @@
 # https://github.com/threestudio-project/threestudio/blob/main/threestudio/models/guidance/deep_floyd_guidance.py
 
-import math
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import IFPipeline
-from diffusers.utils.import_utils import is_xformers_available
+from torch import nn
+
 from .ptp import (
     register_activation_control,
-    unregister_attention_control,
     save_forward,
+    unregister_attention_control,
 )
 
 
@@ -124,7 +123,7 @@ class DeepFloydGuidance(nn.Module):
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         t = torch.randint(
             self.min_step,
-            int((self.max_step + 1)),
+            int(self.max_step + 1),
             [batch_size],
             dtype=torch.long,
             device=self.device,

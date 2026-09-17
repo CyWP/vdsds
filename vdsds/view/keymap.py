@@ -1,4 +1,3 @@
-from typing import Set
 
 from PySide6.QtGui import Qt
 
@@ -13,10 +12,10 @@ class KeyHandler(set):
     def released(self, key: int):
         self.discard(key)
 
-    def get(self) -> Set[int]:
+    def get(self) -> set[int]:
         return self
 
-    def copy(self) -> Set[int]:
+    def copy(self) -> set[int]:
         return set(self)
 
 

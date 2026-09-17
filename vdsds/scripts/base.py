@@ -1,12 +1,12 @@
 import threading
 import traceback
-import torch
 
+import torch
 from PySide6.QtCore import QTimer
 
-from ..view import View
 from ..load import load_model
 from ..rasterizable import Rasterizable
+from ..view import View
 
 
 class Script:

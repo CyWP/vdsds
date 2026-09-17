@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import torch
-
-from typing import Dict
 from torch import Tensor
 
-from ..utils.harmonics import SphericalHarmonic
-from ..utils.camera import Camera
-from ..utils.poisson_system import poisson_system_matrices_from_mesh
 from ..representations.vertextured_mesh import VerTexturedMesh
+from ..utils.camera import Camera
+from ..utils.harmonics import SphericalHarmonic
+from ..utils.poisson_system import poisson_system_matrices_from_mesh
 from .base import Deformation
 
 
@@ -39,7 +37,7 @@ class ColoredMeshJacobianDeformation(Deformation):
 
     @classmethod
     def from_state_dict(
-        cls, state_dict: Dict[str, Tensor]
+        cls, state_dict: dict[str, Tensor]
     ) -> ColoredMeshJacobianDeformation:
         model_keys = {}
         v_deform_keys = {}

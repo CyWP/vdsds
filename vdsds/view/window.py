@@ -1,10 +1,16 @@
+
 import numpy as np
-
-from typing import Tuple
-
-from PySide6.QtCore import QObject, Qt, Signal, QPoint
-from PySide6.QtGui import QKeyEvent, QImage, QPixmap, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QMainWindow, QSizePolicy, QLabel, QDockWidget, QPushButton, QWidget, QVBoxLayout
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class AppView(QObject):
@@ -20,7 +26,7 @@ class AppView(QObject):
         self.window.show()
 
     @property
-    def dimensions(self) -> Tuple[int, int]:
+    def dimensions(self) -> tuple[int, int]:
         return self.window.viewport.get_dimensions()
 
     def update(self, img: np.ndarray):
@@ -152,7 +158,7 @@ class Viewport(QLabel):
             )
         )
 
-    def get_dimensions(self) -> Tuple[int]:
+    def get_dimensions(self) -> tuple[int]:
         return self.height(), self.width()
 
     def resizeEvent(self, event):

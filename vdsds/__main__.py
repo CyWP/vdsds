@@ -4,11 +4,10 @@ from pathlib import Path
 
 import torch
 import yaml
-
-from .scripts.view_model import ViewModel
-from .scripts.train_sds import TrainModelSDS
-
 from easydict import EasyDict as edict
+
+from .scripts.train_sds import TrainModelSDS
+from .scripts.view_model import ViewModel
 
 
 def load_config(path: str) -> dict:

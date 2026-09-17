@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import torch
+from typing import Any
 
+import torch
 from jaxtyping import Float
 from torch import Tensor
-from typing import Dict, List, Any
 
 from ..utils.camera import Camera
 
@@ -28,7 +28,7 @@ class Model:
             return v.dtype
         raise ValueError(f"{self.__class__.__name__} has no tensors")
 
-    def _tensors(self) -> Dict[str, Tensor]:
+    def _tensors(self) -> dict[str, Tensor]:
         raise NotImplementedError
 
     def to(self, *args, **kwargs) -> Model:
@@ -38,7 +38,7 @@ class Model:
         self._apply_tensors(mapped)
         return self
 
-    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+    def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         raise NotImplementedError
 
     def requires_grad_(self, mode: bool = True) -> Model:
@@ -46,17 +46,17 @@ class Model:
             v.requires_grad_(mode)
         return self
 
-    def parameters(self) -> List[Tensor]:
+    def parameters(self) -> list[Tensor]:
         return [v for v in self._tensors().values() if v.is_floating_point()]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"class": type(self).__name__}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Tensor]) -> Model:
+    def from_dict(cls, data: dict[str, Tensor]) -> Model:
         raise NotImplementedError
 
-    def combine(self, models: List[Model]) -> Model:
+    def combine(self, models: list[Model]) -> Model:
         raise NotImplementedError()
 
     def __len__(self) -> int:

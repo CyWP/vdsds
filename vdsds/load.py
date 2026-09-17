@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from .utils.loading import load_glb, load_obj
 from .representations.textured_mesh import TexturedMesh
 from .representations.vertextured_mesh import VerTexturedMesh
+from .utils.loading import load_glb, load_obj
 
 
 def load_model(path: str):

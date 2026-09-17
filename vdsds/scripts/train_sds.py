@@ -1,23 +1,19 @@
 import math
+from typing import Any, ClassVar
 
 import torch
-
-from typing import List, Optional, Dict, Any, ClassVar
+from easydict import EasyDict as edict
 from jaxtyping import Float
 from torch import Tensor
 
-from .base import ViewableScript
-from ..utils.camera import Camera
-from ..utils.quaternion import Quaternion
-from ..deformations.textured_mesh_deform import TexturedMeshDeformation
-from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..deformations.colored_mesh_jacobian_deform import ColoredMeshJacobianDeformation
+from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..representations.textured_mesh import TexturedMesh
 from ..representations.vertextured_mesh import VerTexturedMesh
+from ..utils.camera import Camera
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..utils.img import Splimage
-
-from easydict import EasyDict as edict
+from ..utils.quaternion import Quaternion
+from .base import ViewableScript
 
 
 class TrainModelSDS(ViewableScript):
@@ -49,7 +45,7 @@ class TrainModelSDS(ViewableScript):
         close_on_finish: bool = False,
         finish_on_close: bool = True,
         device: torch.device = torch.device("cuda:0"),
-        config: Dict[str, Any] = {},
+        config: dict[str, Any] = {},
         **kwargs,
     ):
         self.config = edict(**{**self._config_defaults, **config})
@@ -162,7 +158,7 @@ class TrainModelSDS(ViewableScript):
             loss += (((ref_L @ w[:, i]) ** 2) * 2**i).mean()
         return loss
 
-    def _get_orbit_cameras(self, views: int = 8) -> List[Camera]:
+    def _get_orbit_cameras(self, views: int = 8) -> list[Camera]:
         cameras = []
         camera = Camera(H=224, W=224).to(self.device)
         camera.co.radius += 0.5
@@ -176,7 +172,7 @@ class TrainModelSDS(ViewableScript):
             cameras.append(camera)
         return cameras
 
-    def _jitter_cameras(self, cameras: List[Camera]) -> List[Camera]:
+    def _jitter_cameras(self, cameras: list[Camera]) -> list[Camera]:
         """
         For every camera, produce ``num_jitters`` copies rotated by a random
         small rotation (random axis, Gaussian angle with std ``jitter_sigma``
@@ -194,7 +190,7 @@ class TrainModelSDS(ViewableScript):
         return jittered
 
     def get_renders(
-        self, cameras: List[Camera], bg: Optional[Float[Tensor, "3"]] = None
+        self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None
     ) -> Float[Tensor, "B 3 H W"]:
         renders = torch.cat([self.model.rasterize(cam) for cam in cameras], dim=0)
         if bg is not None:

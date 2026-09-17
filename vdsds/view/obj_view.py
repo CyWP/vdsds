@@ -1,26 +1,23 @@
-import torch
 import math
-import os
 import time
-
-from typing import Optional, List, Union
 from pathlib import Path
+
+import torch
 from jaxtyping import Float
 from torch import Tensor
-from PIL import Image
 
 from ..deformations.base import Deformation
 from ..representations.base import Model
 from ..utils.camera import Camera
-from ..utils.img import Splimage, ImgUtils
-from .keymap import K_SHIFT, K_CTRL
+from ..utils.img import ImgUtils, Splimage
+from .keymap import K_CTRL, K_SHIFT
 
 
 class ObjViewer:
     def __init__(
         self,
         obj: Model | Deformation,
-        camera: Optional[Camera] = None,
+        camera: Camera | None = None,
         sensitivity: float = 60.0,
     ):
         self.obj = obj
@@ -35,10 +32,10 @@ class ObjViewer:
         self.roll_x: int = 0
         self.roll_y: int = 0
         self.view_deformed = True
-        self._bg_color: Optional[Tensor] = None
-        self._bg_image: Optional[Splimage] = None
+        self._bg_color: Tensor | None = None
+        self._bg_image: Splimage | None = None
         self._recording = False
-        self._record_dir: Optional[Path] = None
+        self._record_dir: Path | None = None
         self._frame_idx: int = 0
 
     def start_recording(self, output_dir: str = ".") -> None:
@@ -47,7 +44,7 @@ class ObjViewer:
         self._frame_idx = 0
         self._recording = True
 
-    def stop_recording(self) -> Optional[Path]:
+    def stop_recording(self) -> Path | None:
         self._recording = False
         path = self._record_dir
         self._record_dir = None
@@ -66,7 +63,7 @@ class ObjViewer:
         img.save(str(path))
         self._frame_idx += 1
 
-    def set_background(self, bg: Union[Tensor, Splimage, None]) -> None:
+    def set_background(self, bg: Tensor | Splimage | None) -> None:
         if bg is None:
             self._bg_color = None
             self._bg_image = None
@@ -151,7 +148,7 @@ class ObjViewer:
         )
         self.camera.translate_image_space(x, y, dist)
 
-    def mouse_drag(self, x: int, y: int, keys: List[int]):
+    def mouse_drag(self, x: int, y: int, keys: list[int]):
         if K_SHIFT in keys:
             self.tran_x += x
             self.tran_y += y
@@ -162,11 +159,11 @@ class ObjViewer:
             self.rot_x += x
             self.rot_y += y
 
-    def left_click(self, x: int, y: int, keys: List[int]):
+    def left_click(self, x: int, y: int, keys: list[int]):
         pass
 
-    def right_click(self, x: int, y: int, keys: List[int]):
+    def right_click(self, x: int, y: int, keys: list[int]):
         pass
 
-    def scroll(self, x: int, keys: List[int] = None):
+    def scroll(self, x: int, keys: list[int] = None):
         self.camera.translate_depth(x / 600)

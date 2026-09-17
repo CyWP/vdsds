@@ -11,17 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import math
-import random
+
 import numpy as np
 import torch
-import torch.nn as nn
-from typing import Optional, Union, Tuple, List, Callable, Dict
-from tqdm import tqdm
-import torch.nn.functional as F
+from torch import nn
 
 # from utils import pix2patch
-import math
 # import matplotlib.pyplot as plt
 
 
@@ -47,12 +42,12 @@ import math
 @torch.no_grad()
 def text2image_deepfloyd(
     model,
-    prompt: List[str],
+    prompt: list[str],
     controller,
     num_inference_steps: int = 50,
     guidance_scale: float = 7.5,
-    generator: Optional[torch.Generator] = None,
-    latent: Optional[torch.FloatTensor] = None,
+    generator: torch.Generator | None = None,
+    latent: torch.FloatTensor | None = None,
     low_resource: bool = False,
 ):
     register_attention_control(model, controller)
@@ -345,11 +340,7 @@ def collect_mask(unet):
     hs = []
     sub_nets = unet.named_children()
     for net in sub_nets:
-        if "down" in net[0]:
-            collect_mask_(net[1], hs)
-        elif "up" in net[0]:
-            collect_mask_(net[1], hs)
-        elif "mid" in net[0]:
+        if "down" in net[0] or "up" in net[0] or "mid" in net[0]:
             collect_mask_(net[1], hs)
     return hs
 
@@ -372,19 +363,7 @@ def gather_interpolation_loss(model):
     net_count = 0
     sub_nets = model.unet.named_children()
     for net in sub_nets:
-        if "down" in net[0]:
-            loss, count = gather_interpolation_loss_(
-                net[1], interpolation_loss, net_count
-            )
-            interpolation_loss += loss
-            net_count += count
-        elif "up" in net[0]:
-            loss, count = gather_interpolation_loss_(
-                net[1], interpolation_loss, net_count
-            )
-            interpolation_loss += loss
-            net_count += count
-        elif "mid" in net[0]:
+        if "down" in net[0] or "up" in net[0] or "mid" in net[0]:
             loss, count = gather_interpolation_loss_(
                 net[1], interpolation_loss, net_count
             )
@@ -417,9 +396,9 @@ def get_word_inds(text: str, word_place, tokenizer):
 
 def update_alpha_time_word(
     alpha,
-    bounds: Union[float, Tuple[float, float]],
+    bounds: float | tuple[float, float],
     prompt_ind: int,
-    word_inds: Optional[torch.Tensor] = None,
+    word_inds: torch.Tensor | None = None,
 ):
     if type(bounds) is float:
         bounds = 0, bounds
@@ -435,7 +414,7 @@ def update_alpha_time_word(
 def get_time_words_attention_alpha(
     prompts,
     num_steps,
-    cross_replace_steps: Union[float, Dict[str, Tuple[float, float]]],
+    cross_replace_steps: float | dict[str, tuple[float, float]],
     tokenizer,
     max_num_words=77,
 ):

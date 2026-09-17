@@ -1,14 +1,15 @@
 from __future__ import annotations
-import torch
+
+from typing import Any
+
 import nvdiffrast.torch as dr
-
-from typing import Any, Dict
-from torch import Tensor
+import torch
 from jaxtyping import Float, Int
+from torch import Tensor
 
-from .mesh import Mesh
 from ..utils.camera import Camera
 from ..utils.img import Splimage
+from .mesh import Mesh
 
 
 class TexturedMesh(Mesh):
@@ -23,15 +24,15 @@ class TexturedMesh(Mesh):
         self.texture = Splimage(texture._tensor.contiguous())
         self.uv_co = uv_co.contiguous()
 
-    def _tensors(self) -> Dict[str, Tensor]:
+    def _tensors(self) -> dict[str, Tensor]:
         return {**super()._tensor(), "texture": self.texture, "uv_co": self.uv_co}
 
-    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+    def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         super()._apply_tensors(tensor_dict)
         self.uv_co = tensor_dict["uv_co"]
         self.texture._tensor = tensor_dict["texture"]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             **super().to_dict(),
             "uv_co": self.uv_co,
@@ -39,7 +40,7 @@ class TexturedMesh(Mesh):
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> TexturedMesh:
+    def from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
         return cls(
             V=data["V"],
             F=data["F"],

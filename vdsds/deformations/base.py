@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import torch
-
-from typing import Dict, List, Type
-from torch import Tensor, nn
 from jaxtyping import Float
+from torch import Tensor, nn
 
-from ..utils.camera import Camera
 from ..rasterizable import Rasterizable
 from ..representations.base import Model
+from ..utils.camera import Camera
 
 
 class Deformation(nn.Module, Rasterizable):
@@ -25,7 +23,7 @@ class Deformation(nn.Module, Rasterizable):
         next(self.parameters()).dtype
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> Deformation:
+    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> Deformation:
         model_keys = {}
         direct_keys = {}
         for key, value in state_dict.items():
@@ -39,7 +37,7 @@ class Deformation(nn.Module, Rasterizable):
         return cls(model=model, **direct_keys)
 
     @classmethod
-    def _get_model_type(cls) -> Type[Model]:
+    def _get_model_type(cls) -> type[Model]:
         hints = cls.__init__.__annotations__
         if "model" in hints:
             return hints["model"]
@@ -48,7 +46,7 @@ class Deformation(nn.Module, Rasterizable):
     def __len__(self) -> int:
         return len(self.model)
 
-    def get_parameters(self) -> List[nn.Parameter]:
+    def get_parameters(self) -> list[nn.Parameter]:
         """
         Parameters of the deformation, excluding the model's parameters unless
         the model itself is trainable.

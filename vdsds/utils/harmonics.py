@@ -1,11 +1,10 @@
 from __future__ import annotations
-import torch
-import torch.nn as nn
+
 import math
 
+import torch
 from jaxtyping import Float
-from torch import Tensor
-from typing import Dict, Optional
+from torch import Tensor, nn
 
 
 class SphericalHarmonic(nn.Module):
@@ -14,7 +13,7 @@ class SphericalHarmonic(nn.Module):
         degree: int,
         num_dims: int,
         batch_size: int,
-        weights: Optional[Tensor[Float, "B W"]] = None,
+        weights: Tensor[Float, "B W"] | None = None,
         start_degree: int = 0,
     ):
         super().__init__()
@@ -37,7 +36,7 @@ class SphericalHarmonic(nn.Module):
         self.register_buffer("ones_shape", torch.ones((self.batch_size, 1)))
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> SphericalHarmonic:
+    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> SphericalHarmonic:
         weights = state_dict["weights"]
         batch_size, num_dims, num_coeffs = weights.shape
         degree = int(math.sqrt(num_coeffs)) - 1

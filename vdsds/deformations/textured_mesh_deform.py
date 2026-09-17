@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-
-from typing import Dict
 from torch import Tensor
 
-from ..utils.harmonics import SphericalHarmonic
-from ..utils.camera import Camera
-from ..utils.img import ImgUtils
-from .base import Deformation
 from ..representations.textured_mesh import TexturedMesh
+from ..utils.camera import Camera
+from ..utils.harmonics import SphericalHarmonic
+from .base import Deformation
 
 
 class TexturedMeshDeformation(Deformation):
@@ -27,7 +23,7 @@ class TexturedMeshDeformation(Deformation):
         self.register_buffer("start_degree", torch.tensor(start_degree))
 
     @classmethod
-    def from_state_dict(cls, state_dict: Dict[str, Tensor]) -> TexturedMeshDeformation:
+    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> TexturedMeshDeformation:
         model_keys = {}
         J_deform_keys = {}
         color_deform_keys = {}

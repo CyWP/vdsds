@@ -1,5 +1,6 @@
-import torch
 import math
+
+import torch
 
 RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180

@@ -1,12 +1,11 @@
-import numpy
-import igl
-import numpy as np
-import torch
 import time
 
-from scipy.sparse import diags, coo_matrix
+import igl
+import numpy
+import numpy as np
+import torch
+from scipy.sparse import coo_matrix, diags
 from scipy.sparse import csc_matrix as sp_csc
-
 
 USE_TORCH_SPARSE = True  ## This uses TORCH_SPARSE instead of TORCH.SPARSE
 
@@ -26,10 +25,10 @@ if USE_CHOLESPY_GPU or USE_CHOLESPY_CPU:
     from cholespy import CholeskySolverD, MatrixType
 
 if USE_CUPY and torch.cuda.is_available():
-    from cupyx.scipy.sparse.linalg import spsolve_triangular
-    from cupyx.scipy.sparse import csr_matrix
     import cupy
-    from torch.utils.dlpack import to_dlpack, from_dlpack
+    from cupyx.scipy.sparse import csr_matrix
+    from cupyx.scipy.sparse.linalg import spsolve_triangular
+    from torch.utils.dlpack import from_dlpack, to_dlpack
 
 if USE_SCIPY:
     if USE_SCIKITS_UMFPACK:
@@ -45,7 +44,7 @@ if USE_SCIPY:
         # forward pass goes from 0.038 to 0.036
         # assumeSortedIndices=True Does not bring any boost
         from scipy.sparse.linalg import splu as scipy_splu
-        from scipy.sparse.linalg import spsolve_triangular, spsolve
+        from scipy.sparse.linalg import spsolve, spsolve_triangular
 
 
 if USE_TORCH_SPARSE:
@@ -414,7 +413,7 @@ def poisson_system_matrices_from_mesh(
     """
 
     assert type(dim) == int and dim in [2, 3], (
-        f"Only two and three dimensional meshes are supported"
+        "Only two and three dimensional meshes are supported"
     )
     assert type(is_sparse) == bool
     vertices = V

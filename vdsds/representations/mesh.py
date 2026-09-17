@@ -1,14 +1,14 @@
 from __future__ import annotations
-import torch
+
+from typing import Any
+
 import nvdiffrast.torch as dr
-
-from typing import Any, Dict, Tuple, Optional
-from torch import Tensor
+import torch
 from jaxtyping import Float, Int
+from torch import Tensor
 
-from .base import Model
-from ..utils.quaternion import Quaternion
 from ..utils.camera import Camera
+from .base import Model
 
 
 class Mesh(Model):
@@ -33,7 +33,7 @@ class Mesh(Model):
         self.up = torch.tensor([0, 0, 1], device=V.device, dtype=torch.float32)
         self.ctx = dr.RasterizeCudaContext()
 
-    def _tensors(self) -> Dict[str, Tensor]:
+    def _tensors(self) -> dict[str, Tensor]:
         return {
             "V": self.V,
             "F": self.F,
@@ -41,7 +41,7 @@ class Mesh(Model):
             "up": self.up,
         }
 
-    def _apply_tensors(self, tensor_dict: Dict[str, Tensor]):
+    def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         self.V = tensor_dict["V"]
         self.F = tensor_dict["F"]
         self.opengl_conversion = tensor_dict["opengl_conversion"]
@@ -54,11 +54,11 @@ class Mesh(Model):
             self.ctx = dr.RasterizeCudaContext()
         return self
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {**super().to_dict(), "V": self.V, "F": self.F}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Mesh:
+    def from_dict(cls, data: dict[str, Any]) -> Mesh:
         return cls(V=data["V"], F=data["F"])
 
     def copy(self) -> Mesh:
@@ -83,7 +83,7 @@ class Mesh(Model):
         return self.F.shape[0]
 
     @property
-    def centroid(self) -> Float[Tensor, "3"]:
+    def centroid(self) -> Float[Tensor, 3]:
         return torch.mean(self.V, dim=0)
 
     @property
@@ -100,7 +100,7 @@ class Mesh(Model):
         return torch.sort(self.halfedges, dim=1).values
 
     @property
-    def unique_edges(self) -> Tuple[Int[Tensor, "E 2"], Int[Tensor, "2E"]]:
+    def unique_edges(self) -> tuple[Int[Tensor, "E 2"], Int[Tensor, "2E"]]:
         return torch.unique(self.sorted_halfedges, dim=0, return_inverse=True)
 
     @property
@@ -108,7 +108,7 @@ class Mesh(Model):
         return self.unique_edges[0]
 
     @property
-    def EF(self) -> Tuple[Int[Tensor, "E"], Int[Tensor, "F"]]:
+    def EF(self) -> tuple[Int[Tensor, E], Int[Tensor, F]]:
         nF = self.num_F
         device = self.device
         E, inv = self.unique_edges
@@ -133,7 +133,7 @@ class Mesh(Model):
         return self.V[self.F].mean(dim=1)
 
     @property
-    def face_areas(self) -> Float[Tensor, "F"]:
+    def face_areas(self) -> Float[Tensor, F]:
         a, b, c = self.V[self.F[:, 0]], self.V[self.F[:, 1]], self.V[self.F[:, 2]]
         ab = b - a
         ac = c - a
@@ -151,7 +151,7 @@ class Mesh(Model):
         return ortho * torch.where(flip_mask[:, None], -1.0, 1.0)
 
     @property
-    def neighbour_count(self) -> Float[Tensor, "V"]:
+    def neighbour_count(self) -> Float[Tensor, V]:
         counts = torch.zeros(self.V.shape[0], device=self.V.device)
         counts = counts.index_add(
             0, self.F.view(-1), torch.ones(self.F.numel(), device=self.V.device)
@@ -232,7 +232,7 @@ class Mesh(Model):
         return L
 
     @property
-    def adjacency(self) -> Tuple[Int[Tensor, "V+1"], Int[Tensor, "2E"]]:
+    def adjacency(self) -> tuple[Int[Tensor, V+1], Int[Tensor, "2E"]]:
         F = self.F
         nV = self.num_V
         i = torch.cat([F[:, 0], F[:, 1], F[:, 2]])
@@ -338,10 +338,10 @@ class Mesh(Model):
         self.F = F[has_both]
         return self
 
-    def vertex_normal_alignment(self, vec: Float[Tensor, "N 3"]) -> Float[Tensor, "N"]:
+    def vertex_normal_alignment(self, vec: Float[Tensor, "N 3"]) -> Float[Tensor, N]:
         return (self.vertex_normals_normalized * vec).sum(dim=1)
 
-    def vertex_neighbours(self, v_idx: Int[Tensor, "V"]) -> Int[Tensor, "E"]:
+    def vertex_neighbours(self, v_idx: Int[Tensor, V]) -> Int[Tensor, E]:
         A_ptr, A_vals = self.adjacency
         return A_vals[A_ptr[v_idx] : A_ptr[v_idx + 1]]
 
@@ -386,8 +386,8 @@ class Mesh(Model):
         self,
         data: Float[Tensor, "V C"],
         b_co: Float[Tensor, "N 3"],
-        F: Optional[Int[Tensor, "F 3"]] = None,
-        face_idx: Optional[Int[Tensor, "N"]] = None,
+        F: Int[Tensor, "F 3"] | None = None,
+        face_idx: Int[Tensor, N] | None = None,
     ) -> Float[Tensor, "N C"]:
         F = self.F if F is None else F
         if face_idx is not None:

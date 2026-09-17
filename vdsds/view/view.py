@@ -1,16 +1,16 @@
-import numpy as np
 import traceback
-from typing import Optional, Callable
+from collections.abc import Callable
 
+import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication
 
 from ..rasterizable import Rasterizable
-from ..utils.timer import TimedJob
 from ..utils.camera import Camera
+from ..utils.timer import TimedJob
+from .keymap import KeyHandler
 from .obj_view import ObjViewer
 from .window import AppView
-from .keymap import KeyHandler
 
 
 class View(QApplication):
@@ -19,9 +19,9 @@ class View(QApplication):
     def __init__(
         self,
         obj: Rasterizable,
-        camera: Optional[Camera] = None,
+        camera: Camera | None = None,
         fps: int = 24,
-        on_close: Optional[Callable] = None,
+        on_close: Callable | None = None,
     ):
         super().__init__()
         self.window = AppView()

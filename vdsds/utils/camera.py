@@ -1,8 +1,8 @@
 from __future__ import annotations
-import torch
 
-from math import tan, radians, exp
-from typing import Tuple, Optional
+from math import exp, radians, tan
+
+import torch
 from jaxtyping import Float
 from torch import Tensor
 
@@ -44,7 +44,7 @@ class CameraCoordinates:
         self.origin.requires_grad_(mode)
         self.Q.requires_grad_(mode)
 
-    def copy(self) -> "CameraCoordinates":
+    def copy(self) -> CameraCoordinates:
         """
         Return a copy of the object.
         """
@@ -100,7 +100,7 @@ class Camera:
         self.Cy = H / 2.0
 
     @property
-    def location(self) -> Float[Tensor, "3"]:
+    def location(self) -> Float[Tensor, 3]:
         co = self.co
         return (
             co.origin
@@ -187,7 +187,7 @@ class Camera:
     #     )
 
     @property
-    def Rt(self) -> Tuple[Float[Tensor, "3 3"], Float[Tensor, "3 1"]]:
+    def Rt(self) -> tuple[Float[Tensor, "3 3"], Float[Tensor, "3 1"]]:
         """
         Returns Rotation (R, 3x3) and translation(t, 3x1) matrices, in that order.
         """
@@ -203,7 +203,7 @@ class Camera:
 
     def project_c2i(
         self, pts: Float[Tensor, "N 3"]
-    ) -> Tuple[Float[Tensor, "N 3"], Float[Tensor, "N"]]:
+    ) -> tuple[Float[Tensor, "N 3"], Float[Tensor, N]]:
         """
         Project set of points in camera space to image space.
         Returns new coordinates and respective depths.
@@ -221,7 +221,7 @@ class Camera:
         i, _ = self.project_c2i(c)
         return i
 
-    def translate(self, vec: Float[Tensor, "3"]):
+    def translate(self, vec: Float[Tensor, 3]):
         """
         Move the camera along world axes.
         """
@@ -276,7 +276,7 @@ class Camera:
         H: int = 512,
         W: int = 512,
         require_grad: bool = False,
-        origin: Optional[torch.Tensor] = None,
+        origin: torch.Tensor | None = None,
     ) -> Camera:
         if origin is None:
             origin = torch.tensor([0.0, 0.0, 0.0])

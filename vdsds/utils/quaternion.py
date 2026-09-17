@@ -1,10 +1,12 @@
 from __future__ import annotations
-import torch
-from torch import Tensor
+
 import random
+from math import cos, pi, sin, sqrt
+
+import torch
 from jaxtyping import Float
-from typing import Tuple
-from math import sin, cos, sqrt, pi
+from torch import Tensor
+
 from .math import DEG2RAD, RAD2DEG
 
 
@@ -15,7 +17,7 @@ class Quaternion:
     Right multiplication is default: Q_new = Q_old * Q_transform
     """
 
-    def __init__(self, q: Float[Tensor, "4"]):
+    def __init__(self, q: Float[Tensor, 4]):
         self.q = q / q.norm()
 
     @property
@@ -35,7 +37,7 @@ class Quaternion:
 
     @classmethod
     def from_axis_angle(
-        cls, axis: Float[Tensor, "3"], angle: Float[Tensor, ""]
+        cls, axis: Float[Tensor, 3], angle: Float[Tensor, ""]
     ) -> Quaternion:
         axis = axis / axis.norm()
         half = angle * 0.5
@@ -169,7 +171,7 @@ class Quaternion:
 
     @staticmethod
     def axis_rotations(
-        axes: Float[Tensor, "N 3"], angles: Float[Tensor, "N"], eps: float = 1e-8
+        axes: Float[Tensor, "N 3"], angles: Float[Tensor, N], eps: float = 1e-8
     ) -> Float[Tensor, "N 4"]:
 
         if angles.dim() == 1:
@@ -236,7 +238,7 @@ class Quaternion:
             dim=-2,
         )
 
-    def euler(self) -> Tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""]]:
+    def euler(self) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""]]:
         w, x, y, z = self.q
 
         # Roll (x-axis rotation)

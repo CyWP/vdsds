@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Callable, List, Literal, Optional, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
+from typing import Literal, Union
 
 import numpy as np
 import torch
@@ -10,7 +11,6 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from PIL import Image
 from torch import Tensor
-
 
 MaskMode = Literal["R", "G", "B", "A", "RGB", "mean"]
 
@@ -58,7 +58,7 @@ class ImgUtils:
     @staticmethod
     def tensor2pil(
         x: Float[Tensor, "B C H W"],
-    ) -> Image.Image | List[Image.Image]:
+    ) -> Image.Image | list[Image.Image]:
         """Convert tensor to PIL Image.
 
         Args:
@@ -149,7 +149,7 @@ class ImgUtils:
         H: int,
         W: int,
         mode: str = "bilinear",
-        align_corners: Optional[bool] = None,
+        align_corners: bool | None = None,
         antialias: bool = False,
     ) -> Float[Tensor, "B C H W"]:
         """Resize image tensor to target height and width.
@@ -239,8 +239,8 @@ class ImgUtils:
         H: int,
         W: int,
         device: torch.device,
-        padding: Tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Float[Tensor, "2 (H+pt+pb) (W+pl+pr)"]:
+        padding: tuple[int, int, int, int] = (0, 0, 0, 0),
+    ) -> Float[Tensor, 2 (H+pt+pb) (W+pl+pr)]:
         """Generate normalized pixel coordinates.
 
         Both axes independently fill ``[0, 1]`` so each pixel center lies
@@ -272,8 +272,8 @@ class ImgUtils:
 
     @staticmethod
     def extract_patches(
-        co: Float[Tensor, "C H W"], patch_size: Optional[int] = None
-    ) -> Tuple[Float[Tensor, "P S C"], Float[Tensor, "P C"]]:
+        co: Float[Tensor, "C H W"], patch_size: int | None = None
+    ) -> tuple[Float[Tensor, "P S C"], Float[Tensor, "P C"]]:
         """Extract patches from coordinate grid.
 
         Args:
@@ -315,9 +315,9 @@ class ImgUtils:
         H: int,
         W: int,
         device: torch.device,
-        patch_size: Optional[int] = None,
-        padding: Tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Tuple[Float[Tensor, "P S 2"], Float[Tensor, "P 2"]]:
+        patch_size: int | None = None,
+        padding: tuple[int, int, int, int] = (0, 0, 0, 0),
+    ) -> tuple[Float[Tensor, "P S 2"], Float[Tensor, "P 2"]]:
         """Get patches for image dimensions.
 
         Args:
@@ -338,7 +338,7 @@ class ImgUtils:
     @staticmethod
     def extract_image_patches(
         img: Float[Tensor, "B C H W"],
-        patch_size: Optional[int],
+        patch_size: int | None,
         padding_mode: str = "replicate",
     ) -> Float[Tensor, "B P S C"]:
         """Extract image patches matching the layout of get_patches coordinates.
@@ -388,8 +388,8 @@ class ImgUtils:
     @staticmethod
     def coords_pad(
         co: Float[Tensor, "C H W"],
-        padding: Tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Float[Tensor, "C (H+pad_top+pad_bottom) (W+pad_left+pad_right)"]:
+        padding: tuple[int, int, int, int] = (0, 0, 0, 0),
+    ) -> Float[Tensor, C (H+pad_top+pad_bottom) (W+pad_left+pad_right)]:
         pad_top, pad_bottom, pad_left, pad_right = padding
         if padding == (0, 0, 0, 0):
             return co
@@ -450,8 +450,8 @@ class ImgUtils:
     @staticmethod
     def assemble_patches(
         sampled_patches: Float[Tensor, "P S C"],
-        H: Optional[int] = None,
-        W: Optional[int] = None,
+        H: int | None = None,
+        W: int | None = None,
     ) -> Float[Tensor, "B C H W"]:
         """Assemble sampled patches into full image.
 
@@ -546,7 +546,7 @@ class ImgUtils:
         img: Float[Tensor, "B C H W"],
         kernel: Float[Tensor, "C G KH KW"],
         match_channels: bool = False,
-        stride: int | Tuple[int] = 1,
+        stride: int | tuple[int] = 1,
         padding: str = "same",
     ) -> Float[Tensor, "B C H W"]:
         """Convolve image with kernel.
@@ -647,7 +647,7 @@ class ImgUtils:
     def uv_sample(
         img: Float[Tensor, "B C H W"],
         uv_co: Float[Tensor, "N 2"],
-        padding: Tuple[int, int, int, int] = (0, 0, 0, 0),
+        padding: tuple[int, int, int, int] = (0, 0, 0, 0),
     ) -> Float[Tensor, "B N C"]:
         """Bilinearly sample an image at normalized pixel-center coordinates.
 
@@ -837,7 +837,7 @@ class ImgUtils:
         W: int,
         mode: str = "MIN",
         k: int = 1,
-    ) -> Tuple[Float[Tensor, "1 1 H W"], Float[Tensor, "1 1 H W"]]:
+    ) -> tuple[Float[Tensor, "1 1 H W"], Float[Tensor, "1 1 H W"]]:
         """Compute per-axis delta maps to a set of 2D coordinates.
 
         Same reductions as :meth:`distance_map` but applied independently
@@ -905,7 +905,7 @@ class ImgUtils:
 _SplimageInput = Union[
     np.ndarray,
     Image.Image,
-    List[Image.Image],
+    list[Image.Image],
     Tensor,
     os.PathLike,
     str,
@@ -930,10 +930,10 @@ class Splimage:
     """
 
     _tensor: Float[Tensor, "B C H W"]
-    _padding: Tuple[int, int, int, int]
-    _img_cache: Optional[Float[Tensor, "B C H W"]]
-    _pil_cache: Optional[Union[Image.Image, List[Image.Image]]]
-    _np_cache: Optional[np.ndarray]
+    _padding: tuple[int, int, int, int]
+    _img_cache: Float[Tensor, "B C H W"] | None
+    _pil_cache: Image.Image | list[Image.Image] | None
+    _np_cache: np.ndarray | None
     _mask_cache: dict
     _forced_alpha: bool
     _force_rgba_enabled: bool
@@ -944,7 +944,7 @@ class Splimage:
     def __init__(
         self,
         img: _SplimageInput,
-        padding: Tuple[int, int, int, int] = (0, 0, 0, 0),
+        padding: tuple[int, int, int, int] = (0, 0, 0, 0),
         force_rgba: bool = True,
         mask_mode: MaskMode = "mean",
         as_mask: bool = False,
@@ -989,9 +989,7 @@ class Splimage:
 
         if isinstance(img, np.ndarray):
             self._from_numpy(img)
-        elif isinstance(img, Image.Image):
-            self._tensor = ImgUtils.pil2tensor(img)
-        elif isinstance(img, (list, tuple)):
+        elif isinstance(img, Image.Image) or isinstance(img, (list, tuple)):
             self._tensor = ImgUtils.pil2tensor(img)
         elif isinstance(img, Tensor):
             self._from_tensor(img)
@@ -1091,10 +1089,10 @@ class Splimage:
     def update(
         self,
         img: _SplimageInput,
-        padding: Optional[Tuple[int, int, int, int]] = None,
-        force_rgba: Optional[bool] = None,
-        mask_mode: Optional[MaskMode] = None,
-        as_mask: Optional[bool] = None,
+        padding: tuple[int, int, int, int] | None = None,
+        force_rgba: bool | None = None,
+        mask_mode: MaskMode | None = None,
+        as_mask: bool | None = None,
     ) -> None:
         """Replace the underlying image and invalidate all caches.
 
@@ -1114,9 +1112,7 @@ class Splimage:
         """
         if isinstance(img, np.ndarray):
             self._from_numpy(img)
-        elif isinstance(img, Image.Image):
-            self._tensor = ImgUtils.pil2tensor(img)
-        elif isinstance(img, (list, tuple)):
+        elif isinstance(img, Image.Image) or isinstance(img, (list, tuple)):
             self._tensor = ImgUtils.pil2tensor(img)
         elif isinstance(img, Tensor):
             self._from_tensor(img)
@@ -1146,14 +1142,14 @@ class Splimage:
             self._mask_mode = mask_mode
 
     @property
-    def padding(self) -> Tuple[int, int, int, int]:
+    def padding(self) -> tuple[int, int, int, int]:
         return self._padding
 
     @padding.setter
-    def padding(self, value: Tuple[int, int, int, int]) -> None:
+    def padding(self, value: tuple[int, int, int, int]) -> None:
         self.set_padding(value)
 
-    def set_padding(self, value: Tuple[int, int, int, int]) -> None:
+    def set_padding(self, value: tuple[int, int, int, int]) -> None:
         """Set implicit padding (top, bottom, left, right).
 
         The image is **not** padded; this only records metadata so
@@ -1180,7 +1176,7 @@ class Splimage:
         pr = min(pr, max(self.W - pl - 1, 0))
         self._padding = (pt, pb, pl, pr)
 
-    def _hw_from_cache(self) -> Optional[Tuple[int, int]]:
+    def _hw_from_cache(self) -> tuple[int, int] | None:
         """Return (H, W) from the first populated cache, else None."""
         if self._img_cache is not None:
             t = self._img_cache
@@ -1216,7 +1212,7 @@ class Splimage:
         return self._tensor.shape[1]
 
     @property
-    def shape(self) -> Tuple[int, int, int, int]:
+    def shape(self) -> tuple[int, int, int, int]:
         return tuple(self._tensor.shape)
 
     def same_size(self, *others: Splimage) -> bool:
@@ -1289,7 +1285,7 @@ class Splimage:
             self._img_cache = self._tensor
         return self._img_cache
 
-    def mask(self, mode: Optional[MaskMode] = None) -> Float[Tensor, "B 1 H W"]:
+    def mask(self, mode: MaskMode | None = None) -> Float[Tensor, "B 1 H W"]:
         """Return single-channel mask. Cached per mode.
 
         Args:
@@ -1312,7 +1308,7 @@ class Splimage:
             self._mask_cache[mode] = ImgUtils.tensor2mask(self._tensor, mode=mode)
         return self._mask_cache[mode]
 
-    def to_pil(self) -> Union[Image.Image, List[Image.Image]]:
+    def to_pil(self) -> Image.Image | list[Image.Image]:
         """Convert to PIL Image(s). Cached after first call."""
         if self._pil_cache is None:
             self._pil_cache = ImgUtils.tensor2pil(self._tensor)
@@ -1343,57 +1339,57 @@ class Splimage:
         else:
             pil.show()
 
-    def __add__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __add__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, torch.add)
 
-    def __radd__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __radd__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, lambda a, b: torch.add(b, a))
 
-    def __iadd__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __iadd__(self, other: Splimage | float | Tensor) -> Splimage:
         self._tensor = torch.add(self._tensor, self._resolve_tensor(other))
         self._invalidate()
         return self
 
-    def __sub__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __sub__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, torch.sub)
 
-    def __rsub__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __rsub__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, lambda a, b: torch.sub(b, a))
 
-    def __isub__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __isub__(self, other: Splimage | float | Tensor) -> Splimage:
         self._tensor = torch.sub(self._tensor, self._resolve_tensor(other))
         self._invalidate()
         return self
 
-    def __mul__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __mul__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, torch.mul)
 
-    def __rmul__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __rmul__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, lambda a, b: torch.mul(b, a))
 
-    def __imul__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __imul__(self, other: Splimage | float | Tensor) -> Splimage:
         self._tensor = torch.mul(self._tensor, self._resolve_tensor(other))
         self._invalidate()
         return self
 
-    def __truediv__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __truediv__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, torch.div)
 
-    def __rtruediv__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __rtruediv__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, lambda a, b: torch.div(b, a))
 
-    def __itruediv__(self, other: Union[Splimage, float, int, Tensor]) -> Splimage:
+    def __itruediv__(self, other: Splimage | float | Tensor) -> Splimage:
         self._tensor = torch.div(self._tensor, self._resolve_tensor(other))
         self._invalidate()
         return self
 
-    def _resolve_tensor(self, other: Union[Splimage, float, int, Tensor]) -> Tensor:
+    def _resolve_tensor(self, other: Splimage | float | Tensor) -> Tensor:
         if isinstance(other, Splimage):
             return other._tensor
         return other
 
     def _apply_op(
-        self, other: Union[Splimage, float, int, Tensor], op: Callable
+        self, other: Splimage | float | Tensor, op: Callable
     ) -> Splimage:
         result = op(self._tensor, self._resolve_tensor(other))
         new = Splimage(result)
@@ -1446,7 +1442,7 @@ class Splimage:
         self._invalidate()
         return self
 
-    def blur(self, kernel_size: int, sigma: Optional[float] = None) -> Splimage:
+    def blur(self, kernel_size: int, sigma: float | None = None) -> Splimage:
         """Apply a Gaussian blur via convolution. Returns new Splimage.
 
         Args:
@@ -1468,7 +1464,7 @@ class Splimage:
         new = Splimage(blurred, padding=self._padding)
         return new
 
-    def blur_(self, kernel_size: int, sigma: Optional[float] = None) -> Splimage:
+    def blur_(self, kernel_size: int, sigma: float | None = None) -> Splimage:
         """Apply a Gaussian blur in-place.
 
         Args:
@@ -1491,7 +1487,7 @@ class Splimage:
         H: int,
         W: int,
         mode: str = "bilinear",
-        align_corners: Optional[bool] = None,
+        align_corners: bool | None = None,
         antialias: bool = False,
     ) -> Splimage:
         """Resize image. Returns new Splimage.
@@ -1521,7 +1517,7 @@ class Splimage:
         H: int,
         W: int,
         mode: str = "bilinear",
-        align_corners: Optional[bool] = None,
+        align_corners: bool | None = None,
         antialias: bool = False,
     ) -> Splimage:
         """Resize image in-place.
@@ -1611,7 +1607,7 @@ class Splimage:
     def mask_sample(
         self,
         uv_co: Float[Tensor, "N 2"],
-        mode: Optional[MaskMode] = None,
+        mode: MaskMode | None = None,
     ) -> Float[Tensor, "B N 1"]:
         """Bilinearly sample the mask at normalized coordinates.
 
@@ -1634,7 +1630,7 @@ class Splimage:
     def sample_px_coords(
         self,
         N: int,
-        mode: Optional[MaskMode] = None,
+        mode: MaskMode | None = None,
         noise: bool = False,
     ) -> Float[Tensor, "N 2"]:
         """Sample N pixel coordinates weighted by the mask.
@@ -1663,7 +1659,7 @@ class Splimage:
     def sample_points(
         self,
         num_points: int,
-        mode: Optional[MaskMode] = None,
+        mode: MaskMode | None = None,
         noise: bool = False,
     ) -> Float[Tensor, "B num_points 2"]:
         """Sample point coordinates per batch element from the mask.
@@ -1710,7 +1706,7 @@ class Splimage:
 
     def extract_image_patches(
         self,
-        patch_size: Optional[int],
+        patch_size: int | None,
         padding_mode: str = "replicate",
     ) -> Float[Tensor, "B P S C"]:
         """Extract non-overlapping patches.
@@ -1730,7 +1726,7 @@ class Splimage:
 
     def pad(
         self,
-        padding: Tuple[int, int, int, int],
+        padding: tuple[int, int, int, int],
         mode: Literal["constant", "reflect", "replicate", "circular"] = "replicate",
     ) -> Splimage:
         """Pad the image and update padding metadata. Returns new Splimage.
@@ -1748,7 +1744,7 @@ class Splimage:
 
     def pad_(
         self,
-        padding: Tuple[int, int, int, int],
+        padding: tuple[int, int, int, int],
         mode: Literal["constant", "reflect", "replicate", "circular"] = "replicate",
     ) -> Splimage:
         """Pad the image in-place and update padding metadata.
@@ -1771,7 +1767,7 @@ class Splimage:
 
     def _pad_impl(
         self,
-        padding: Tuple[int, int, int, int],
+        padding: tuple[int, int, int, int],
         mode: Literal["constant", "reflect", "replicate", "circular"] = "replicate",
     ) -> Splimage:
         pt, pb, pl, pr = padding
@@ -1785,7 +1781,7 @@ class Splimage:
         )
         return new
 
-    def erode(self, padding: Tuple[int, int, int, int]) -> Splimage:
+    def erode(self, padding: tuple[int, int, int, int]) -> Splimage:
         """Crop the image by (top, bottom, left, right). Returns new Splimage.
 
         The inverse of :meth:`pad`: each entry trims that many pixels off
@@ -1822,7 +1818,7 @@ class Splimage:
         )
         return new
 
-    def erode_(self, padding: Tuple[int, int, int, int]) -> Splimage:
+    def erode_(self, padding: tuple[int, int, int, int]) -> Splimage:
         """Erode in-place.
 
         Args:

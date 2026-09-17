@@ -1,17 +1,14 @@
-import torch
-import numpy as np
-import math
-import trimesh
-
 from pathlib import Path, PureWindowsPath
-from torch import Tensor
+
+import torch
+import trimesh
 from jaxtyping import Shaped
-from typing import Dict, Tuple
+from torch import Tensor
 
 from .img import Splimage
 
 
-def load_obj(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
+def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     assert path.suffix == ".obj"
     content = {}
     F = []
@@ -79,7 +76,7 @@ def load_obj(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
     }
 
 
-def load_glb(path: Path) -> Dict[str, Shaped[Tensor, "..."]]:
+def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     assert path.suffix == ".glb"
     mesh = trimesh.load(path, force="mesh")
     # mesh = mesh.subdivide(iterations=1)
