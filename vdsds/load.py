@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from .representations.mesh import Mesh
 from .representations.textured_mesh import TexturedMesh
 from .representations.vertextured_mesh import VerTexturedMesh
 from .utils.loading import load_glb, load_obj
@@ -13,5 +14,6 @@ def load_model(path: str):
     if extension == ".obj":
         return TexturedMesh.from_mesh_data(**load_obj(path))
     if extension == ".glb":
+        # return Mesh.from_mesh_data(**load_glb(path))
         return VerTexturedMesh.from_mesh_data(**load_glb(path))
         return TexturedMesh.from_mesh_data(**load_glb(path))

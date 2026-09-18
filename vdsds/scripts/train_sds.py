@@ -9,6 +9,7 @@ from torch import Tensor
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..utils.camera import Camera
 from ..utils.deepfloyd import DeepFloydGuidance
+from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
 from .base import ViewableScript
 
@@ -16,14 +17,13 @@ from .base import ViewableScript
 class TrainModelSDS(ViewableScript):
     _config_defaults: ClassVar = {
         "epochs": 200,
-        "lr": 0.025,
+        "lr": 0.01,
         "sds_alpha": 1.0,
         "jacobian_alpha": 25.0,
         "accum_steps": 2,
         "model_size": "M",
         "dtype": "float16",
-        "degree": 1,
-        "start_degree": 1,
+        "num_funcs": 24,
         "views": 4,
         "max_grad": 0.1,
         "cpu_offload": False,
@@ -52,27 +52,21 @@ class TrainModelSDS(ViewableScript):
 
     def load_model(self, path: str):
         return MeshJacobianDeformation(
-            super().load_model(path),
-            degree=self.config["degree"],
-            start_degree=self.config["start_degree"],
+            super().load_model(path), num_funcs=self.config["num_funcs"]
         )
 
     def run(self):
         device = self.device
         config = self.config
         cameras = self._get_orbit_cameras(views=config["views"])
-        bg_color = torch.tensor([0.25, 0.25, 0.25]).to(self.device).requires_grad_(True)
+        bg_color = torch.tensor([0.15, 1.0, 0.0]).to(self.device).requires_grad_(True)
         self.set_background(bg_color)
-        optim_color = torch.tensor(
-            [0.65, 0.65, 0.65], device=self.model.device
-        ).requires_grad_(True)
         df = DeepFloydGuidance(config, device)
         accum_steps = config["accum_steps"]
         generator = torch.Generator(device=self.model.device)
         generator.manual_seed(config["seed"])
         self.model.train(train_model=False)
-        self.model.color_deform.requires_grad_(False)
-        og_color = self.model.model.color
+        self.model.model.texture.requires_grad_(True)
         sds_alpha = config["sds_alpha"]
         jacobian_alpha = config["jacobian_alpha"]
         txt = config.prompt
@@ -94,19 +88,10 @@ class TrainModelSDS(ViewableScript):
         prompt_num = len(prompts)
         n_samples = n_views * (1 + config["num_jitters"]) * accum_steps
         optimizer = torch.optim.Adam(
-            [*self.model.parameters(), bg_color, optim_color], lr=config["lr"]
+            [*self.model.parameters(), self.model.model.texture],
+            lr=config["lr"],
         )
         for e in range(config["epochs"]):
-            if (
-                e >= start_color_fit
-                and not self.model.color_deform.weights.requires_grad
-            ):
-                self.model.color_deform.requires_grad_(True)
-                self.model.model.color = og_color
-            else:
-                self.model.model.color = optim_color[None].repeat(
-                    self.model.model.num_V, 1
-                )
             epoch_loss = 0.0
             optimizer.zero_grad()
             for _ in range(accum_steps):
@@ -131,13 +116,7 @@ class TrainModelSDS(ViewableScript):
     def jacobian_loss(self) -> torch.Tensor:
         J_def = self.model.J_deform
         W = J_def.weights
-        loss = torch.tensor(0.0, device=W.device)
-        start = 0
-        for i in range(J_def.degree + 1):
-            end = start + 2 * i + 1
-            loss += (W[:, :, start : end + 1] ** 2 * 2 ** (i)).mean()
-            start = end
-        return loss
+        return W.mean() ** 2
 
     def cotan_loss(self, ref_L) -> torch.Tensor:
         w = self.model.V_deform.weights
@@ -180,7 +159,13 @@ class TrainModelSDS(ViewableScript):
     def get_renders(
         self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None
     ) -> Float[Tensor, "B 3 H W"]:
-        renders = torch.cat([self.model.rasterize(cam) for cam in cameras], dim=0)
+        renders = torch.cat(
+            [
+                self.model.rasterize(cam, LightSource().to(cam.device))
+                for cam in cameras
+            ],
+            dim=0,
+        )
         if bg is not None:
             return self.apply_bg(renders, bg)
         return renders

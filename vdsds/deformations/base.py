@@ -7,6 +7,7 @@ from torch import Tensor, nn
 from ..rasterizable import Rasterizable
 from ..representations.base import Model
 from ..utils.camera import Camera
+from ..utils.light import LightSource
 
 
 class Deformation(nn.Module, Rasterizable):
@@ -20,7 +21,7 @@ class Deformation(nn.Module, Rasterizable):
 
     @property
     def dtype(self) -> torch.device:
-        next(self.parameters()).dtype
+        return next(self.parameters()).dtype
 
     @classmethod
     def from_state_dict(cls, state_dict: dict[str, Tensor]) -> Deformation:
@@ -61,8 +62,8 @@ class Deformation(nn.Module, Rasterizable):
     def deformed(self, camera: Camera) -> Model:
         raise NotImplementedError()
 
-    def rasterize(self, camera: Camera) -> Float[Tensor, "B 4 H W"]:
-        return self.deformed(camera).rasterize(camera)
+    def rasterize(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
+        return self.deformed(camera).rasterize(camera, light)
 
     def to(self, *args, **kwargs) -> Deformation:
         super().to(*args, **kwargs)

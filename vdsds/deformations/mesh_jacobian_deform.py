@@ -5,19 +5,19 @@ from torch import Tensor
 
 from ..representations.mesh import Mesh
 from ..utils.camera import Camera
-from ..utils.harmonics import SphericalHarmonic
 from ..utils.poisson_system import PoissonSystem
+from ..utils.spherical_basis import SphericalGaussianBasis
 from .base import Deformation
 
 
 class MeshJacobianDeformation(Deformation):
-    def __init__(self, model: Mesh, degree: int = 1, start_degree: int = 1):
+    def __init__(self, model: Mesh, num_funcs: int = 8):
         super().__init__(model)
-        self.register_buffer("degree", torch.tensor(degree))
         self.poisson = PoissonSystem.from_mesh(model.V, model.F)
-        self.J_deform = SphericalHarmonic(
-            degree, 9, model.num_F, start_degree=start_degree
-        )
+        # self.J_deform = SphericalHarmonic(
+        #     degree, 9, model.num_F, start_degree=start_degree
+        # )
+        self.J_deform = SphericalGaussianBasis(num_funcs, 9, model.num_F)
         self._cached = False
 
     def to(self, *args, **kwargs):
@@ -46,10 +46,9 @@ class MeshJacobianDeformation(Deformation):
                 direct_keys[key] = value
 
         model = Mesh.from_state_dict(model_keys)
-        degree = int(direct_keys.get("degree", 2))
 
-        instance = cls(model=model, degree=degree)
-        instance.V_deform = SphericalHarmonic.from_state_dict(v_deform_keys)
+        instance = cls(model=model)
+        instance.V_deform = SphericalGaussianBasis.from_state_dict(v_deform_keys)
         return instance
 
     def deformed(self, camera: Camera) -> Mesh:

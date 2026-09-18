@@ -63,7 +63,7 @@ class PoissonSystem:
         """
         grad = gradient_operator(V, F)
         d_area = _stacked_double_areas(V, F)
-        d_area_np = d_area.cpu().numpy()
+        d_area_np = d_area.double().cpu().numpy()
         degenerate = d_area[::3] <= 0
         if degenerate.any():
             _logger.warning(
@@ -71,12 +71,16 @@ class PoissonSystem:
                 "the poisson system may be ill-conditioned."
             )
         coo = grad.coalesce()
+        # The system matrices are always built in float64 (independent of
+        # V.dtype) to match the previous float64 pipeline and to keep the
+        # cholesky factorization well conditioned.
+        dtype = torch.float64
         grad = torch.sparse_coo_tensor(
             coo.indices(),
-            coo.values() / d_area[coo.indices()[0]],
+            coo.values().double() / d_area.double()[coo.indices()[0]],
             coo.shape,
             device=V.device,
-            dtype=V.dtype,
+            dtype=dtype,
         ).coalesce()
         sc_grad = _torch_coo_to_scipy(grad)
         nf = F.shape[0]
@@ -88,7 +92,7 @@ class PoissonSystem:
             (sc_grad.data, (packed_of[sc_grad.row], sc_grad.col)), shape=sc_grad.shape
         )
         mass_diag = scipy.sparse.diags(d_area_np)
-        device, dtype = V.device, V.dtype
+        device = V.device
         laplace = _scipy_coo_to_torch(
             (sc_grad.T @ mass_diag @ sc_grad).tocoo(), device, dtype
         )
@@ -364,7 +368,7 @@ def _coo_to_cholesky(
     Returns:
         A cholespy solver that can solve the system on CPU or GPU.
     """
-    coo = coo.coalesce()
+    coo = coo.coalesce().double()
     indices = coo.indices()
     return CholeskySolverD(
         coo.shape[0],

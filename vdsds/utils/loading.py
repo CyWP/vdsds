@@ -60,7 +60,7 @@ def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
                             raise FileNotFoundError(
                                 f"Could not find albedo texture file for {path}."
                             )
-                    mtl = Splimage(tex_file)
+                    mtl = Splimage(tex_file)._tensor
 
         except Exception as e:
             raise e
@@ -82,6 +82,15 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     # mesh = mesh.subdivide(iterations=1)
     mesh.merge_vertices(merge_tex=True, merge_norm=True)
     mesh.process(validate=True)
+    mesh.remove_infinite_values()
+    trimesh.repair.broken_faces(mesh)
+    mesh.update_faces(mesh.nondegenerate_faces())
+
+    # 2. Merge vertices that are visually identical but disconnected
+    mesh.fill_holes()
+
+    # 3. Re-run normal fixes
+    mesh.fix_normals(multibody=True)
     # mesh = list(scene.geometry.values())[0]
     # meshes = list(scene.geometry.values())
     # mesh = trimesh.util.concatenate(meshes)
@@ -95,7 +104,7 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         uv_co[:, 1] = 1 - uv_co[:, 1]
         # uv_co = torch.stack([1 - uv_co[:, 1], 1 - uv_co[:, 0]], dim=1)
         uv_idx = F.clone()
-        mtl = Splimage(mesh.visual.material.baseColorTexture)
+        mtl = Splimage(mesh.visual.material.baseColorTexture)._tensor
     # V[:, 2] *= -1
     V = torch.stack([V[:, 2], V[:, 0], -V[:, 1]], dim=1)
     return {

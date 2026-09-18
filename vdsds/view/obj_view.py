@@ -9,6 +9,7 @@ from torch import Tensor
 from ..deformations.base import Deformation
 from ..representations.base import Model
 from ..utils.camera import Camera
+from ..utils.light import LightSource
 from ..utils.img import ImgUtils, Splimage
 from .keymap import K_CTRL, K_SHIFT
 
@@ -18,11 +19,15 @@ class ObjViewer:
         self,
         obj: Model | Deformation,
         camera: Camera | None = None,
+        light: LightSource | None = None,
         sensitivity: float = 60.0,
     ):
         self.obj = obj
         self.camera = (
             Camera().to(obj.device) if camera is None else camera.to(obj.device)
+        )
+        self.light = (
+            LightSource().to(obj.device) if light is None else light.to(obj.device)
         )
         self.sensitivity = sensitivity
         self.rot_x: int = 0
@@ -74,7 +79,9 @@ class ObjViewer:
             self._bg_image = None
             self._bg_color = bg.flatten().to(self.obj.device)
         else:
-            raise TypeError(f"Expected Tensor, Splimage, or None, got {type(bg).__name__}")
+            raise TypeError(
+                f"Expected Tensor, Splimage, or None, got {type(bg).__name__}"
+            )
 
     def _apply_background(
         self, render: Float[Tensor, "B 4 H W"]
@@ -106,9 +113,9 @@ class ObjViewer:
         self.check_roll()
         self.check_translation()
         if isinstance(self.obj, Deformation) and not self.view_deformed:
-            render = self.obj.model.rasterize(self.camera)
+            render = self.obj.model.rasterize(self.camera, self.light)
         else:
-            render = self.obj.rasterize(self.camera)
+            render = self.obj.rasterize(self.camera, self.light)
         render = self._apply_background(render)
         self._save_frame(render)
         return render

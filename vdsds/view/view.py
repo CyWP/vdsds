@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from ..rasterizable import Rasterizable
 from ..utils.camera import Camera
+from ..utils.light import LightSource
 from ..utils.timer import TimedJob
 from .keymap import KeyHandler
 from .obj_view import ObjViewer
@@ -19,13 +20,14 @@ class View(QApplication):
     def __init__(
         self,
         obj: Rasterizable,
+        light: LightSource | None = None,
         camera: Camera | None = None,
         fps: int = 24,
         on_close: Callable | None = None,
     ):
         super().__init__()
         self.window = AppView()
-        self.viewer = ObjViewer(obj, camera=camera)
+        self.viewer = ObjViewer(obj, camera=camera, light=light)
         self.keys = KeyHandler()
         self.on_close = on_close
         self._connect()
@@ -51,7 +53,7 @@ class View(QApplication):
             w.closed.connect(self.on_close)
         self.frame_ready.connect(self.window.update)
         self.window.window.view_deformation_btn.toggled.connect(
-            lambda checked: setattr(self.viewer, 'view_deformed', checked)
+            lambda checked: setattr(self.viewer, "view_deformed", checked)
         )
         self.window.window.record_btn.toggled.connect(self._toggle_recording)
 

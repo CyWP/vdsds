@@ -17,13 +17,14 @@ class TexturedMesh(Mesh):
         F: Int[Tensor, "F 3"],
         uv_co: Float[Tensor, "V 2"],
         texture: Float[Tensor, "B C H W"],
+        **kwargs,
     ):
-        super().__init__(V, F.to(torch.int32))
-        self.texture = texture.contiguous()
+        super().__init__(V, F.to(torch.int32), texture=texture)
+        # self.texture = texture.contiguous()
         self.uv_co = uv_co.contiguous()
 
     def _tensors(self) -> dict[str, Tensor]:
-        return {**super()._tensor(), "uv_co": self.uv_co}
+        return {**super()._tensors(), "uv_co": self.uv_co}
 
     def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         super()._apply_tensors(tensor_dict)
@@ -55,7 +56,7 @@ class TexturedMesh(Mesh):
     def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
         uv_img, _ = dr.interpolate(self.uv_co[None], rast, self.F)
         return dr.texture(
-            self.texture._tensor[:, :3].permute(0, 2, 3, 1).contiguous(),
+            self.texture[:, :3].permute(0, 2, 3, 1).contiguous(),
             uv_img,
             filter_mode="linear",
             boundary_mode="wrap",

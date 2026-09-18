@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -10,15 +12,17 @@ class LightSource:
     Just a representation of a point light
     """
 
+    _up: ClassVar = [0.0, 0.0, -1.0]
+
     def __init__(
         self,
-        origin: Float[Tensor, 3],
-        strength: Float[Tensor, ""],
+        origin: Float[Tensor, 3] | None = None,
+        strength: Float[Tensor, ""] | None = None,
+        ambient: Float[Tensor, ""] | None = None,
     ):
-        self.origin = origin
-        self.strength = strength
+        self.origin = torch.tensor(self._up) if origin is None else origin
+        self.strength = torch.tensor(1.5) if strength is None else strength
 
-    @property
     def device(self) -> torch.device:
         return self.origin.device
 
@@ -33,7 +37,7 @@ class LightSource:
 
     def requires_grad_(self, mode: bool) -> LightSource:
         self.origin.requires_grad_(mode)
-        self.Q.requires_grad_(mode)
+        self.strength.requires_grad_(mode)
         return self
 
     def copy(self) -> LightSource:

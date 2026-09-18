@@ -4,11 +4,13 @@ from typing import Any
 
 import nvdiffrast.torch as dr
 import torch
+import torch.nn.functional as torch_F
 from jaxtyping import Float, Int
 from torch import Tensor
 
 from ..utils.camera import Camera
 from ..utils.light import LightSource
+from ..utils.img import Splimage
 from .base import Model
 
 
@@ -18,14 +20,15 @@ class Mesh(Model):
         V: Float[Tensor, "V 3"],
         F: Int[Tensor, "F 3"],
         texture: Float[Tensor, 3] | None = None,
+        **kwargs,
     ):
         super().__init__()
-        self.F = F
-        self.V = V
+        self.F = F.to(torch.int32).contiguous()
+        self.V = V.contiguous()
         self.texture = (
-            torch.tensor([0.5, 0.5, 0.5], device=V.device)
+            torch.tensor([0.5, 0.5, 0.5], device=V.device).contiguous()
             if texture is None
-            else texture
+            else texture.contiguous()
         )
         self.opengl_conversion = torch.tensor(
             [
@@ -153,13 +156,10 @@ class Mesh(Model):
         a, b, c = self.V[self.F[:, 0]], self.V[self.F[:, 1]], self.V[self.F[:, 2]]
         ab = b - a
         ac = c - a
-        ortho = torch.cross(ab, ac, dim=1)
-        with torch.no_grad():
-            flip_mask = (ortho * (self.face_centroids - self.centroid)).sum(dim=1) < 0
-        return ortho * torch.where(flip_mask[:, None], -1.0, 1.0)
+        return torch.cross(ab, ac, dim=1)
 
     @property
-    def neighbour_count(self) -> Float[Tensor, V]:
+    def neighbour_count(self) -> Float[Tensor, "V"]:
         counts = torch.zeros(self.V.shape[0], device=self.V.device)
         counts = counts.index_add(
             0, self.F.view(-1), torch.ones(self.F.numel(), device=self.V.device)
@@ -538,7 +538,9 @@ class Mesh(Model):
         )
 
     def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
-        return dr.interpolate(self.texture[None].expand(self.num_V, 3), rast, self.F)[0]
+        return dr.interpolate(
+            self.texture[None].expand(self.num_V, 3).contiguous(), rast, self.F
+        )[0]
 
     def lambert_shade(
         self,
@@ -547,20 +549,22 @@ class Mesh(Model):
         camera: Camera,
         light: LightSource,
     ) -> Float[Tensor, "B H W 4"]:
-        normal_map = dr.interpolate(self.vertex_normals, rast, self.F)
-        pos_map = dr.interpolate(self.V, rast, self.F)
-        delta_map = pos_map - camera.origin[None, None, None]
-        ray_map = pos_map - light.origin[None, None, None]
-        align_map = (delta_map * normal_map).sum(dim=-1)
-        normal_map = torch.where(align_map < 0, -normal_map, normal_map)
-        return albedo_map * light.strength * (ray_map * normal_map).sum(dim=-1)
+        normal_map, _ = dr.interpolate(self.vertex_normals_normalized, rast, self.F)
+        pos_map, _ = dr.interpolate(self.V, rast, self.F)
+        ray_map = light.origin[None, None, None] - pos_map
+        return (
+            albedo_map
+            * light.strength
+            * (ray_map * normal_map).sum(dim=-1, keepdim=True)
+        )
 
     def rasterize(
         self, camera: Camera, light: LightSource, antialias: bool = True
     ) -> Float[Tensor, "B 4 H W"]:
         pos_clip = self.VH @ self.camera_to_nvdiffrast(camera).T
         rast, _ = dr.rasterize(self.ctx, pos_clip[None], self.F, [camera.H, camera.W])
-        rgb = self.lambert_shade(rast, self.raster_albedo(rast), camera, light)
+        albedo = self.raster_albedo(rast)
+        rgb = self.lambert_shade(rast, albedo, camera, light)
         rgba = torch.cat(
             [rgb, torch.ones((*rgb.shape[:3], 1), device=rgb.device)], dim=-1
         )
@@ -568,7 +572,7 @@ class Mesh(Model):
         if antialias:
             pos_clip_batched = pos_clip[None] if pos_clip.ndim == 2 else pos_clip
             rgba = dr.antialias(rgba, rast, pos_clip_batched, self.F)
-        return rgba.permute(0, 3, 1, 2)
+        return rgba.permute(0, 3, 1, 2).clamp(0, 1)
 
     @classmethod
     def from_mesh_data(
@@ -584,4 +588,4 @@ class Mesh(Model):
             V_center = (V_max + V_min) / 2
             V = (V - V_center) / V_extent.max()
         V = torch.stack([V[:, 1], V[:, 0], -V[:, 2]], dim=1)
-        return cls(V, F, **kwargs)
+        return cls(V, F)
