@@ -8,20 +8,37 @@ from torch import Tensor, nn
 
 
 class SphericalGaussianBasis(nn.Module):
-    """Basis of spherical Gaussians on the SO(3) sphere for view-dependent interpolation.
+    """Basis of spherical Gaussians on SO(3) for view-dependent interpolation.
 
     Attributes:
-        centroids (nn.Parameter): (B, N, 2) polar coordinates (theta, phi) of each Gaussian.
-        sigmas (nn.Parameter): (B, N) angular falloff (in radians) of each Gaussian.
+        centroids (nn.Parameter): (B, N, 3) centroid *directions* (arbitrary
+            3D vectors, normalized internally for evaluation).
+        log_sigmas (nn.Parameter): (B, N) log of the falloff widths in
+            dot-product space: the gaussian fall-off evaluated at a query
+            direction with dot-product distance ``g = 1 - u @ m`` is
+            ``exp(-g / (2 * sigma^2))`` with ``sigma = exp(log_sigmas)``.
         weights (nn.Parameter): (B, N, num_dims) values interpolated per function.
 
     Construction:
         SphericalGaussianBasis(num_funcs, num_dims, batch_size, ...) -> SphericalGaussianBasis
 
     Notes:
-        - Default sigmas satisfy sum_i 2*pi*sigma_i^2 = 4*pi*sigma_overlap, i.e. the
-          total Gaussian mass covers a sigma_overlap fraction of the SO(3) sphere surface.
-        - Evaluation is pole-safe via the haversine angular distance.
+        - The falloff is a function of the dot product ``g = 1 - u @ m`` with
+          the normalized centroid direction, NOT of the angular distance:
+          this makes evaluation and, in particular, all gradients finite and
+          well defined everywhere (poles, antipodes, exact-center queries,
+          collapsed widths). Near coincidence ``1 - cos(theta) ~ theta^2 / 2``
+          so dot-space widths relate to the previous radian sigmas by
+          ``sigma_dot = sigma_radian^2 / 2`` for the same
+          ``exp(-theta^2 / (2 sigma_r^2))`` falloff (so the 1/e angular
+          radius is ``sqrt(2) * sigma_r`` in both parametrizations).
+        - Distant queries have softer tails than the equivalent
+          radians-parameterized gaussian (dot form decays only to
+          ``exp(-2 / (2 sigma_dot))`` at the antipode).
+        - Default widths preserve the mass-covering init of the old
+          radian parametrization:
+          ``sigma_r = sqrt(2 * sigma_overlap / num_funcs)``, i.e.
+          ``N * 2 * pi * sigma_r^2 = 4 * pi * sigma_overlap``.
     """
 
     def __init__(
@@ -30,10 +47,10 @@ class SphericalGaussianBasis(nn.Module):
         num_dims: int,
         batch_size: int,
         weights: Float[Tensor, "B N D"] | None = None,
-        sigmas: Float[Tensor, "B N"] | None = None,
-        centroids: Float[Tensor, "B N 2"] | None = None,
+        log_sigmas: Float[Tensor, "B N"] | None = None,
+        centroids: Float[Tensor, "B N 3"] | None = None,
         init: str = "fibonacci",
-        sigma_overlap: float = 0.5,
+        sigma_overlap: float = 2.0,
     ):
         """
         Args:
@@ -41,11 +58,14 @@ class SphericalGaussianBasis(nn.Module):
             num_dims: Number of interpolated dimensions D.
             batch_size: Batch size B.
             weights: Optional explicit weights (B, N, D), zeros otherwise.
-            sigmas: Optional explicit sigmas (B, N).
-            centroids: Optional explicit centroids (B, N, 2).
+            log_sigmas: Optional explicit log widths (B, N) in dot-space.
+            centroids: Optional explicit centroid directions (B, N, 3),
+                arbitrary nonzero vectors (normalized internally).
             init: Centroid initialization, "fibonacci" or "random".
-            sigma_overlap: Fraction of the SO(3) sphere surface covered by the total
-                Gaussian mass, sum_i 2*pi*sigma_i^2 = 4*pi*sigma_overlap.
+            sigma_overlap: Fraction of the SO(3) sphere surface covered by
+                the total gaussian mass (see the class Notes for the exact
+                relation to dot-space widths). Only used when `log_sigmas`
+                is not provided.
         """
         super().__init__()
         self.num_funcs = num_funcs
@@ -53,18 +73,21 @@ class SphericalGaussianBasis(nn.Module):
         self.batch_size = batch_size
 
         if centroids is not None:
-            assert centroids.shape == (batch_size, num_funcs, 2)
+            assert centroids.shape == (batch_size, num_funcs, 3)
         else:
             centroids = self._init_centroids(batch_size, num_funcs, init)
         self.centroids = nn.Parameter(centroids)
 
-        if sigmas is not None:
-            assert sigmas.shape == (batch_size, num_funcs)
+        if log_sigmas is not None:
+            assert log_sigmas.shape == (batch_size, num_funcs)
         else:
-            # sum_i 2*pi*sigma_i^2 = 4*pi*sigma_overlap  ->  sigma_i = sqrt(2*sigma_overlap/N)
-            sigma = math.sqrt(2 * sigma_overlap / num_funcs)
-            sigmas = torch.full((batch_size, num_funcs), sigma)
-        self.sigmas = nn.Parameter(sigmas)
+            theta = math.sqrt(2 * sigma_overlap / num_funcs)  # radian sigma
+            # Matching exp(-theta^2 / (2 sigma^2)): 1 - cos(theta) ~ theta^2/2,
+            # so the dot-space width with falloff exp(-g / (2 sigma_dot))
+            # reproduces the old radian falloff for sigma_dot = theta^2 / 2.
+            sigma_dot = theta**2 / 2
+            log_sigmas = torch.full((batch_size, num_funcs), math.log(sigma_dot))
+        self.log_sigmas = nn.Parameter(log_sigmas)
 
         if weights is not None:
             assert weights.shape == (batch_size, num_funcs, num_dims)
@@ -75,21 +98,20 @@ class SphericalGaussianBasis(nn.Module):
         self.register_buffer("ones_shape", torch.ones((self.batch_size, 1)))
 
     @staticmethod
-    def _init_centroids(B: int, N: int, init: str) -> Float[Tensor, "B N 2"]:
+    def _init_centroids(B: int, N: int, init: str) -> Float[Tensor, "B N 3"]:
         if init == "fibonacci":
             i = torch.arange(N, dtype=torch.float32) + 0.5
-            theta = torch.acos(1 - i / N)  # (N,)
+            z = 1 - i / N  # (N,)
+            r = (1 - z * z).clamp(min=0.0).sqrt()
             golden = math.pi * (1 + math.sqrt(5))
-            phi = (golden * torch.arange(N, dtype=torch.float32)) % (
-                2 * math.pi
-            )  # (N,)
-            centroids = torch.stack([theta, phi], dim=-1)  # (N, 2)
+            phi = (golden * i) % (2 * math.pi)  # (N,)
+            centroids = torch.stack([r * phi.cos(), r * phi.sin(), z], dim=-1)  # (N, 3)
             return centroids[None].expand(B, -1, -1).clone()
         if init == "random":
             z = torch.rand(B, N) * 2 - 1  # (B, N)
-            theta = torch.acos(z)
             phi = torch.rand(B, N) * 2 * math.pi
-            return torch.stack([theta, phi], dim=-1)
+            r = (1 - z * z).clamp(min=0.0).sqrt()
+            return torch.stack([r * phi.cos(), r * phi.sin(), z], dim=-1)
         raise ValueError(f"Unknown init: {init}")
 
     @classmethod
@@ -97,7 +119,12 @@ class SphericalGaussianBasis(nn.Module):
         """Reconstruct an instance from its parameter tensors.
 
         Args:
-            state_dict: Dict with "weights" and optionally "sigmas"/"centroids".
+            state_dict: Dict with "weights" and optionally
+                "log_sigmas"/"centroids".
+
+        Note:
+            Checkpoints in the old format (2D polar "centroids" and
+            radian-valued "sigmas") are not compatible with this class.
 
         Returns:
             out: SphericalGaussianBasis restored from the given tensors.
@@ -109,7 +136,7 @@ class SphericalGaussianBasis(nn.Module):
             num_dims=num_dims,
             batch_size=batch_size,
             weights=weights,
-            sigmas=state_dict.get("sigmas"),
+            log_sigmas=state_dict.get("log_sigmas"),
             centroids=state_dict.get("centroids"),
         )
 
@@ -117,14 +144,15 @@ class SphericalGaussianBasis(nn.Module):
         """Deep copy with cloned parameters.
 
         Returns:
-            out: New SphericalGaussianBasis with cloned centroids, sigmas, weights.
+            out: New SphericalGaussianBasis with cloned centroids, log
+            widths and weights.
         """
         return SphericalGaussianBasis(
             num_funcs=self.num_funcs,
             num_dims=self.num_dims,
             batch_size=self.batch_size,
             weights=self.weights.clone(),
-            sigmas=self.sigmas.clone(),
+            log_sigmas=self.log_sigmas.clone(),
             centroids=self.centroids.clone(),
         )
 
@@ -134,18 +162,17 @@ class SphericalGaussianBasis(nn.Module):
         Returns:
             out: Overlap-weighted mean of squared pairwise weight differences.
         """
-        th0 = self.centroids[..., 0].unsqueeze(-1)  # (B, N, 1)
-        ph0 = self.centroids[..., 1].unsqueeze(-1)  # (B, N, 1)
-
-        cos_d = torch.cos(th0) * torch.cos(th0.transpose(1, 2)) + torch.sin(
-            th0
-        ) * torch.sin(th0.transpose(1, 2)) * torch.cos(ph0 - ph0.transpose(1, 2))
-        hav = ((1 - cos_d) / 2).clamp(0, 1)
-        d2 = 2 * torch.asin(hav.sqrt()) ** 2  # (B, N, N)
-
-        # Gaussian overlap proxy between all centroid pairs
-        s2 = self.sigmas.unsqueeze(1) ** 2 + self.sigmas.unsqueeze(2) ** 2  # (B, N, N)
-        overlap = torch.exp(-d2 / s2)  # (B, N, N)
+        # Pairwise overlaps from the dot-product falloff. Diagonal pairs
+        # (g = 0) evaluate to exp(0) = 1 and every gradient stays finite.
+        m = self._axis_dirs()  # (B, N, 3)
+        g = (1.0 - (m.unsqueeze(2) * m.unsqueeze(1)).sum(-1)).clamp_min(
+            0.0
+        )  # (B, N, N)
+        w = self.log_sigmas.exp().clamp_min(torch.finfo(m.dtype).tiny)  # (B, N)
+        # Product of the two independent gaussian tails:
+        # exp(-g/(2w_i)) * exp(-g/(2w_j)) = exp(-g*(w_i + w_j)/(2 w_i w_j))
+        exponent = g * 0.5 * (1 / w.unsqueeze(1) + 1 / w.unsqueeze(2))
+        overlap = torch.exp(-exponent)  # (B, N, N)
 
         diff2 = (self.weights.unsqueeze(1) - self.weights.unsqueeze(2)).pow(2).sum(-1)
         # (B, N, 1, D) - (B, 1, N, D) -> (B, N, N, D) -> (B, N, N)
@@ -154,10 +181,53 @@ class SphericalGaussianBasis(nn.Module):
         )
         return out.mean()
 
+    def _axis_dirs(self) -> Float[Tensor, "B N 3"]:
+        """Normalized centroid direction vectors.
+
+        Returns:
+            m: (B, N, 3) unit vectors of the given centroids.
+        """
+        norm2 = (
+            (self.centroids * self.centroids)
+            .sum(-1, keepdim=True)
+            .clamp_min(torch.finfo(self.centroids.dtype).tiny)
+        )
+        return self.centroids / norm2.sqrt()
+
+    def _from_unit_directions(
+        self, u: Float[Tensor, "B M 3"]
+    ) -> Float[Tensor, "B M D"]:
+        """Interpolates weights for unit query directions.
+
+        Evaluates the spherical gaussians from the dot-product distance
+        (1 - u @ m), which is smooth and has finite gradients everywhere,
+        including at the poles, the antipodes and exactly on a centroid.
+
+        Args:
+            u: unit query directions.
+
+        Returns:
+            out: Interpolated values (B, M, D).
+        """
+        m = self._axis_dirs().unsqueeze(1)  # (B, 1, N, 3)
+        g = (1.0 - (u.unsqueeze(-2) * m).sum(-1)).clamp_min(0.0)  # (B, M, N)
+        # Widths are positive via log-space; clamp away from 0 so the
+        # inverse stays finite. Multiply by the reciprocal instead of
+        # dividing by tiny widths: the backward pass of a division
+        # involves 1/denominator^2, which overflows to inf for tiny
+        # widths and turns the gradient into NaN.
+        inv = 0.5 / self.log_sigmas.exp().unsqueeze(1).clamp_min(
+            torch.finfo(u.dtype).tiny
+        )  # (B, 1, N)
+        basis = torch.exp(-g * inv)  # (B, M, N)
+        out = basis @ self.weights  # (B, M, N) @ (B, N, D) -> (B, M, D)
+        return out
+
     def from_polar(
         self, theta: Float[Tensor, "M ..."], phi: Float[Tensor, "M ..."]
     ) -> Float[Tensor, "B M D"]:
-        """
+        """Interpolates weights for polar angles (pure-trig, gradient safe).
+
         Args:
             theta: Polar angles, scalar or (B, M).
             phi: Azimuthal angles, scalar or (B, M).
@@ -178,19 +248,10 @@ class SphericalGaussianBasis(nn.Module):
 
         th = theta.unsqueeze(-1)  # (B, M, 1)
         ph = phi.unsqueeze(-1)  # (B, M, 1)
-        th0 = self.centroids[..., 0].unsqueeze(1)  # (B, 1, N)
-        ph0 = self.centroids[..., 1].unsqueeze(1)  # (B, 1, N)
-
-        # Haversine angular distance between query and centroids
-        cos_d = torch.cos(th) * torch.cos(th0) + torch.sin(th) * torch.sin(
-            th0
-        ) * torch.cos(ph - ph0)  # (B, M, N)
-        hav = ((1 - cos_d) / 2).clamp(0, 1)
-        d2 = 2 * torch.asin(hav.sqrt()) ** 2  # (B, M, N)
-
-        basis = torch.exp(-d2 / (2 * self.sigmas.unsqueeze(1) ** 2))  # (B, M, N)
-        out = basis @ self.weights  # (B, M, N) @ (B, N, D) -> (B, M, D)
-        return out
+        u = torch.stack(
+            (th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()), dim=-1
+        )  # (B, M, 3)
+        return self._from_unit_directions(u)
 
     def forward(
         self,
@@ -204,7 +265,8 @@ class SphericalGaussianBasis(nn.Module):
         return self.from_polar(theta, phi)
 
     def from_cartesian(self, vec: Float[Tensor, "... 3"]) -> Float[Tensor, "B M D"]:
-        """
+        """Interpolates weights for cartesian query directions.
+
         Args:
             vec: Cartesian directions (3,), (B, 3), or (B, M, 3).
 
@@ -222,11 +284,8 @@ class SphericalGaussianBasis(nn.Module):
         elif vec.shape[0] != self.batch_size:
             vec = vec.expand(self.batch_size, -1, -1)
 
-        x, y, z = vec[..., 0], vec[..., 1], vec[..., 2]
-        r = vec.norm(dim=-1).clamp(min=1e-8)  # (B, M)
-
-        theta = torch.acos(z / r)  # polar angle from Z-axis, (B, M)
-        phi = torch.atan2(y, x)  # azimuthal angle in XY-plane, (B, M)
-
-        # Poles: phi undefined, but haversine evaluation is independent of phi there
-        return self.from_polar(theta, phi)
+        # Unit query directions, clamped norm so poles and zero vectors
+        # stay finite AND differentiable.
+        r2 = (vec * vec).sum(-1, keepdim=True).clamp_min(torch.finfo(vec.dtype).tiny)
+        u = vec / r2.sqrt()  # (B, M, 3)
+        return self._from_unit_directions(u)

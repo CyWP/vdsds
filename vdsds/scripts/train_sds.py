@@ -1,3 +1,4 @@
+import logging
 import math
 from typing import Any, ClassVar
 
@@ -9,9 +10,12 @@ from torch import Tensor
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..utils.camera import Camera
 from ..utils.deepfloyd import DeepFloydGuidance
+from ..utils.img import Splimage
 from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
 from .base import ViewableScript
+
+logger = logging.getLogger(__name__)
 
 
 class TrainModelSDS(ViewableScript):
@@ -19,18 +23,18 @@ class TrainModelSDS(ViewableScript):
         "epochs": 200,
         "lr": 0.01,
         "sds_alpha": 1.0,
-        "jacobian_alpha": 25.0,
+        "jacobian_alpha": 500.0,
         "accum_steps": 2,
         "model_size": "M",
         "dtype": "float16",
-        "num_funcs": 24,
-        "views": 4,
+        "num_funcs": 6,
+        "num_jitters": 3,
+        "views": 12,
         "max_grad": 0.1,
         "cpu_offload": False,
         "guidance_scale": 7.5,
         "seed": 42,
-        "num_jitters": 2,
-        "jitter_sigma": math.pi / 60,
+        "jitter_sigma": math.pi / 10,
         "start_color_fit": 80,
     }
 
@@ -58,7 +62,7 @@ class TrainModelSDS(ViewableScript):
     def run(self):
         device = self.device
         config = self.config
-        cameras = self._get_orbit_cameras(views=config["views"])
+        # cameras = self._get_orbit_cameras(views=config["views"])
         bg_color = torch.tensor([0.15, 1.0, 0.0]).to(self.device).requires_grad_(True)
         self.set_background(bg_color)
         df = DeepFloydGuidance(config, device)
@@ -66,7 +70,7 @@ class TrainModelSDS(ViewableScript):
         generator = torch.Generator(device=self.model.device)
         generator.manual_seed(config["seed"])
         self.model.train(train_model=False)
-        self.model.model.texture.requires_grad_(True)
+        self.model.J_deform.log_sigmas.requires_grad_(False)
         sds_alpha = config["sds_alpha"]
         jacobian_alpha = config["jacobian_alpha"]
         txt = config.prompt
@@ -79,24 +83,31 @@ class TrainModelSDS(ViewableScript):
             ]
         else:
             prompts = [txt + ", a 3d rendering"]
-        # with torch.no_grad():
-        #     ref_L = self.model.model.L_cotan_csr
         print("Target text prompt:", txt)
         text_embeds = df.encode_text_2(prompts, negative_prompt=[""], batch_size=1).to(
             device
         )
         prompt_num = len(prompts)
-        n_samples = n_views * (1 + config["num_jitters"]) * accum_steps
+        n_samples = n_views * self.config["num_jitters"] * accum_steps
         optimizer = torch.optim.Adam(
-            [*self.model.parameters(), self.model.model.texture],
+            [*self.model.parameters()],
             lr=config["lr"],
         )
+        cameras = self._get_orbit_cameras(views=n_views)
         for e in range(config["epochs"]):
             epoch_loss = 0.0
             optimizer.zero_grad()
+            # cameras = [
+            #     Camera.random_rot(H=224, W=224, radius=1.5, point_upwards=True).to(
+            #         self.device
+            #     )
+            #     for _ in range(n_views)
+            # ]
             for _ in range(accum_steps):
+                # for cam in cameras:
                 for cam in [*cameras, *self._jitter_cameras(cameras)]:
                     tgt_render = self.get_renders([cam], bg=bg_color)
+                    # breakpoint()
                     loss = (
                         df.SDS(tgt_render, text_embeds, controller=None)["loss_sds"]
                         / n_samples

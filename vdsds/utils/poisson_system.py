@@ -14,6 +14,22 @@ from torch import Tensor
 _logger = logging.getLogger(__name__)
 
 
+def _finite_stats(t: Tensor) -> str:
+    """Builds a short summary string of the finite-ness of a tensor.
+
+    Args:
+        t: the tensor to summarize.
+
+    Returns:
+        A string with shape, max magnitude and number of non-finite
+        entries of `t`.
+    """
+    return (
+        f"shape={tuple(t.shape)} max_abs={t.abs().max().item():.3e} "
+        f"nonfinite={(~torch.isfinite(t)).sum().item()}"
+    )
+
+
 class PoissonSystem:
     def __init__(
         self,
@@ -130,7 +146,15 @@ class PoissonSystem:
 
         Returns:
             The reconstructed vertex positions, mean-centered per batch item.
+
+        Raises:
+            FloatingPointError: if the jacobians or the solve contain
+                NaNs/Infs (see the log for magnitudes).
         """
+        if not torch.isfinite(jacobians).all():
+            msg = f"NaN/Inf in jacobians before the poisson solve: {_finite_stats(jacobians)}"
+            _logger.error(msg)
+            raise FloatingPointError(msg)
         if self.my_splu is None:
             self.my_splu = _coo_to_cholesky(self.L)
         sol = _predicted_jacobians_to_vertices_via_poisson_solve(
@@ -155,6 +179,21 @@ class PoissonSystem:
             Per-face 2D jacobians expressed in the face tangential basis.
         """
         return torch.einsum("abcd,bde->abce", (D, self.W.type_as(D)))
+
+    def expand_tangent_jacobians(
+        self, J_tan: Float[Tensor, "B F 3 2"]
+    ) -> Float[Tensor, "B F 3 3"]:
+        """Reconstructs full 3D jacobians from tangent-frame predictions.
+
+        Args:
+            J_tan: per-face jacobian rows expressed in the face tangential
+                basis (e.g. network predictions, `J_tan = J @ W`).
+
+        Returns:
+            Full per-face jacobians `J` with `J @ W == J_tan`; the
+            out-of-tangent components are determined by the tangent basis.
+        """
+        return torch.einsum("bfae,fde->bfad", J_tan, self.W)
 
     def restricted_jacobians_from_vertices(
         self, V: Float[Tensor, "B V 3"]
@@ -208,9 +247,13 @@ class SPLUSolveLayer(torch.autograd.Function):
         b = b.contiguous()
         ctx.solver = solver
         vertices = SPLUSolveLayer.solve(solver, b).type_as(b)
-        assert not torch.isnan(vertices).any(), (
-            "Nan in the forward pass of the POISSON SOLVE"
-        )
+        if not torch.isfinite(vertices).all():
+            msg = (
+                "NaN/Inf in the forward pass of the POISSON SOLVE: "
+                f"b: {_finite_stats(b)}, out: {_finite_stats(vertices)}"
+            )
+            _logger.error(msg)
+            raise FloatingPointError(msg)
         return vertices
 
     def backward(
@@ -236,10 +279,15 @@ class SPLUSolveLayer(torch.autograd.Function):
         # Because A is symmetric we simply solve A^{-1}g without transposing, but this will break if A is not symmetric.
         grad_output = grad_output.contiguous()
         grad = SPLUSolveLayer.solve(ctx.solver, grad_output)
-        # At this point we perform a NAN check because the backsolve sometimes returns NaNs.
-        assert not torch.isnan(grad).any(), (
-            "Nan in the backward pass of the POISSON SOLVE"
-        )
+        # At this point we check for NaNs because the backsolve sometimes returns them.
+        if not torch.isfinite(grad).all():
+            msg = (
+                "NaN/Inf in the backward pass of the POISSON SOLVE: "
+                f"grad_output: {_finite_stats(grad_output)}, "
+                f"grad: {_finite_stats(grad)}"
+            )
+            _logger.error(msg)
+            raise FloatingPointError(msg)
         return None, grad
 
     @staticmethod

@@ -277,14 +277,30 @@ class Camera:
         W: int = 512,
         require_grad: bool = False,
         origin: torch.Tensor | None = None,
+        radius: float = 1.0,
+        point_upwards: bool = False,
     ) -> Camera:
-        if origin is None:
-            origin = torch.tensor([0.0, 0.0, 0.0])
+        Q = Quaternion.random()
+        if point_upwards:
+            R = Q.R()
+            forward = R[1, :]
+            up = -R[2, :]
+            world_up = torch.tensor([0.0, 0.0, 1.0])
+
+            # Project both axes onto the plane orthogonal to the forward axis.
+            up_perp = up - (up @ forward) * forward
+            w_perp = world_up - (world_up @ forward) * forward
+
+            # If forward is (anti)parallel to the world up, no roll can help.
+            if w_perp.norm() > 1e-8:
+                angle = torch.atan2(
+                    torch.linalg.cross(up_perp, w_perp) @ forward,
+                    up_perp @ w_perp,
+                )
+                Q = Q * Quaternion.from_axis_angle(forward, -angle)
         cam = Camera(
             H=H,
             W=W,
-            co=CameraCoordinates(origin=origin, Q=Quaternion.random()),
+            co=CameraCoordinates(origin=origin, Q=Q, radius=radius),
         )
-        if require_grad:
-            cam.requires_grad_(require_grad)
         return cam

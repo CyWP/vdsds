@@ -14,9 +14,9 @@ class MeshJacobianDeformation(Deformation):
     def __init__(self, model: Mesh, num_funcs: int = 8):
         super().__init__(model)
         self.poisson = PoissonSystem.from_mesh(model.V, model.F)
-        # self.J_deform = SphericalHarmonic(
-        #     degree, 9, model.num_F, start_degree=start_degree
-        # )
+        # The network predicts a tangent-frame (3x2) deformation jacobian
+        # per face; it is expanded to a full 3x3 via expand_tangent_jacobians
+        # before composing with the source jacobian.
         self.J_deform = SphericalGaussianBasis(num_funcs, 9, model.num_F)
         self._cached = False
 
@@ -52,15 +52,34 @@ class MeshJacobianDeformation(Deformation):
         return instance
 
     def deformed(self, camera: Camera) -> Mesh:
+        """Computes the view dependent deformed mesh.
+
+        Args:
+            camera: camera used to evaluate the view dependent deformation.
+
+        Returns:
+            The deformed mesh.
+
+        Raises:
+            FloatingPointError: if the network predicts NaNs/Infs or the
+                poisson solve fails (see the poisson system log).
+        """
         if not self._cached:
             self.cache_solver()
         camera_loc = camera.location.unsqueeze(0)
         m = self.model
         delta = m.centroid - camera_loc
+        # Tangent-frame prediction (F, 3, 2) -> full jacobian via the
+        # face tangential bases, then compose with the source jacobian.
+        # J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 2)
+        # J_disp = (
+        #     torch.eye(3, device=self.device, dtype=J_tan.dtype)[None]
+        #     + self.poisson.expand_tangent_jacobians(J_tan[None])
+        # ).squeeze(0)
+        J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 3)
         J_disp = (
-            self.J_deform.from_cartesian(delta).reshape(-1, 3, 3)
-            + torch.eye(3, device=self.device)[None]
-        )
+            torch.eye(3, device=self.device, dtype=J_tan.dtype)[None] + J_tan[None]
+        ).squeeze(0)
         J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp[None], self.J_src)
         V_new = self.poisson.solve_poisson(J_transformed)[0]
         return Mesh(V=V_new, F=m.F)

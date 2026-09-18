@@ -252,3 +252,43 @@ def test_permuted_faces():
     J_njf = ps_p.jacobians_from_vertices(Vb)
     rel = (J_old - J_njf).abs().max() / J_njf.abs().max()
     assert rel < RTOL, f"permuted jacobians rel diff {rel}"
+
+
+def test_tangent_expansion_roundtrip(systems):
+    V, _, ps = systems
+    nf = ps.W.shape[0]
+    torch.manual_seed(0)
+    D = torch.rand(1, nf, 3, 3, dtype=torch.float64)
+    R = ps.restrict_jacobians(D)
+    J_full = ps.expand_tangent_jacobians(R)
+    assert torch.allclose(R, J_full @ ps.W, atol=1e-12)
+
+
+def test_zero_tangent_deformation_reconstructs(systems):
+    V, _, ps = systems
+    nf = ps.W.shape[0]
+    J_src = ps.jacobians_from_vertices(V.unsqueeze(0))
+    zeros_tan = torch.zeros(1, nf, 3, 2, dtype=torch.float64)
+    J_disp = (
+        torch.eye(3, dtype=torch.float64)[None]
+        + torch.einsum("bfae,fde->bfad", zeros_tan, ps.W)
+    )
+    J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp, J_src)
+    sol = ps.solve_poisson(J_transformed)[0]
+    V0 = V - V.mean(dim=0)
+    assert torch.allclose(sol, V0, atol=1e-8)
+
+
+def test_random_tangent_deformation_is_finite(systems):
+    V, _, ps = systems
+    nf = ps.W.shape[0]
+    torch.manual_seed(2)
+    J_src = ps.jacobians_from_vertices(V.unsqueeze(0))
+    for scale in [0.0, 1.0, 10.0]:
+        J_tan = torch.rand(1, nf, 3, 2, dtype=torch.float64) * scale
+        J_disp = torch.eye(3, dtype=torch.float64)[None] + ps.expand_tangent_jacobians(
+            J_tan
+        )
+        J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp, J_src)
+        sol = ps.solve_poisson(J_transformed)
+        assert torch.isfinite(sol).all(), f"non-finite solution at scale {scale}"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import nvdiffrast.torch as dr
@@ -13,6 +14,8 @@ from ..utils.light import LightSource
 from ..utils.img import Splimage
 from .base import Model
 
+logger = logging.getLogger(__name__)
+
 
 class Mesh(Model):
     def __init__(
@@ -25,6 +28,21 @@ class Mesh(Model):
         super().__init__()
         self.F = F.to(torch.int32).contiguous()
         self.V = V.contiguous()
+        d_area = torch.linalg.norm(
+            torch.cross(
+                self.V[self.F[:, 1]] - self.V[self.F[:, 0]],
+                self.V[self.F[:, 2]] - self.V[self.F[:, 0]],
+                dim=-1,
+            ),
+            dim=-1,
+        )
+        degenerate = d_area <= 0
+        if degenerate.any():
+            logger.warning(
+                f"Mesh has {(degenerate.sum()).item()} degenerate zero-area faces "
+                f"(indices {torch.nonzero(degenerate).flatten()[:10].tolist()}); "
+                "jacobians and the poisson solve may produce NaNs."
+            )
         self.texture = (
             torch.tensor([0.5, 0.5, 0.5], device=V.device).contiguous()
             if texture is None
@@ -556,6 +574,8 @@ class Mesh(Model):
             albedo_map
             * light.strength
             * (ray_map * normal_map).sum(dim=-1, keepdim=True)
+            / 2
+            + 0.5
         )
 
     def rasterize(
