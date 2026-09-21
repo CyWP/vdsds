@@ -1,11 +1,14 @@
 import threading
 import traceback
+from typing import Any, ClassVar
 
 import torch
+from easydict import EasyDict as edict
 from PySide6.QtCore import QTimer
 
-from ..load import load_model
+from ..deformations import get_deformation
 from ..rasterizable import Rasterizable
+from ..representations import load_model
 from ..view import View
 
 
@@ -16,6 +19,21 @@ class Script:
 
     def run(self):
         raise NotImplementedError
+
+
+class ViewableScriptConfig(edict):
+    _defaults: ClassVar[dict[str, any]] = {
+        "window": {
+            "fps": 30,
+            "view": True,
+            "close_on_finish": False,
+            "finish_on_close": True,
+            "bg_color": [0.2, 0.2, 0.2],
+        }
+    }
+
+    def __init__(self, **kwargs):
+        super().__init__(**{**self._defaults, **kwargs})
 
 
 class ViewableScript(Script):
@@ -30,24 +48,29 @@ class ViewableScript(Script):
     visualizes it.
     """
 
+    _config_defaults: ClassVar[dict[str, any]] = {
+        "model": {"name": "textured_mesh", "path": None}
+    }
+
     def __init__(
         self,
+        device: torch.device,
         model_path: str,
-        fps: int = 30,
-        view: bool = True,
-        close_on_finish: bool = False,
-        finish_on_close: bool = True,
-        device: torch.device = torch.device("cuda:0"),
+        config: dict[str, Any] | None = None,
         **kwargs,
     ):
         super().__init__()
-        self.model = self.load_model(model_path).to(device)
-        self.fps = fps
-        self.close_on_finish = close_on_finish
-        self.finish_on_close = finish_on_close
+        self.config = ViewableScriptConfig(**{**self._config_defaults, **config})
+        cfg = self.config
+        self.model = self.load_model().to(device)
         self._closed = threading.Event()
-        if view:
-            self.view = View(self.model, fps=fps, on_close=self._on_close)
+        if cfg.window.view:
+            self.view = View(self.model, fps=cfg.window.fps, on_close=self._on_close)
+            self.set_background(
+                torch.tensor(
+                    cfg.window.bg_color, device=self.device, dtype=torch.float32
+                )
+            )
         else:
             self.view = None
 
@@ -61,15 +84,19 @@ class ViewableScript(Script):
 
     def abort_requested(self) -> bool:
         """True once the user has closed the window while ``finish_on_close`` is set."""
-        return self.finish_on_close and self._closed.is_set()
+        return self.config.window.finish_on_close and self._closed.is_set()
 
     def _on_close(self):
         self._closed.set()
-        if self.finish_on_close:
+        if self.config.window.finish_on_close:
             self.finish()
 
-    def load_model(self, path: str) -> Rasterizable:
-        return load_model(path)
+    def load_model(self) -> Rasterizable:
+        cfg = self.config
+        model = load_model(cfg.model.path, **cfg.model)
+        if hasattr(cfg, "deformation"):
+            model = get_deformation(model, **cfg.deformation)
+        return model
 
     def launch(self) -> int:
         """
@@ -104,13 +131,13 @@ class ViewableScript(Script):
     def _finalize(self):
         if self.view is None:
             return
-        if self.close_on_finish:
+        if self.config.window.close_on_finish:
             self.finish()
             QTimer.singleShot(0, self.view.close)
             return
         # Keep the window open until the user closes it.
         self._closed.wait()
-        if not self.finish_on_close:
+        if not self.config.window.finish_on_close:
             # Natural end: the script finished and closing is not what finishes it.
             self.finish()
         QTimer.singleShot(0, self.view.close)

@@ -1,1 +1,2 @@
-prompt: "Cute cartoon giraffe, long neck"
+diffusion:
+  prompt: "Cute cartoon giraffe, long neck"

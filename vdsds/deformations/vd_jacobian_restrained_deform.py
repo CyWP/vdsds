@@ -55,7 +55,7 @@ class VDRestrainedJacobianDeformation(Deformation):
         model = Mesh.from_state_dict(model_keys)
 
         instance = cls(model=model)
-        instance.V_deform = SphericalGaussianBasis.from_state_dict(v_deform_keys)
+        instance.J_deform = SphericalGaussianBasis.from_state_dict(v_deform_keys)
         return instance
 
     def jacobians_3d(

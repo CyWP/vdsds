@@ -1,13 +1,11 @@
 import logging
 import math
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import torch
-from easydict import EasyDict as edict
 from jaxtyping import Float
 from torch import Tensor
 
-from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..utils.camera import Camera
 from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.light import LightSource
@@ -18,53 +16,46 @@ logger = logging.getLogger(__name__)
 
 
 class TrainModelSDS(ViewableScript):
-    _config_defaults: ClassVar = {
-        "epochs": 400,
-        "lr": 0.0075,
-        "sds_alpha": 1.0,
-        "jacobian_alpha": 1000.0,
-        "laplacian_alpha": 10000.0,
-        "accum_steps": 2,
-        "model_size": "M",
-        "dtype": "float16",
-        "num_funcs": 6,
-        "num_jitters": 3,
-        "views": 16,
-        "max_grad": 0.1,
-        "cpu_offload": False,
-        "guidance_scale": 7.5,
-        "seed": 42,
-        "jitter_sigma": math.pi / 10,
-        "start_color_fit": 80,
+    _config_defaults: ClassVar[dict[str, any]] = {
+        "optim": {
+            "epochs": 400,
+            "lr": 0.075,
+            "accum_steps": 2,
+            "seed": 42,
+        },
+        "diffusion": {
+            "prompt": "Rhinoceros",
+            "model_size": "M",  # Options: 'S', 'M', 'L', 'XL'
+            "dtype": "float16",
+            "cpu_offload": False,
+            "guidance_scale": 7.5,
+        },
+        "losses": {
+            "sds": 1.0,
+            "jacobian": 500.0,
+            "laplacian": 10000.0,
+        },
+        "model": {"name": "mesh"},
+        "deformation": {
+            "name": "vd_restrained",  # Options: 'full', 'vd_full', 'vd_restrained'
+            "num_funcs": 8,
+            "init": "fibonacci",  # Options: 'fibonacci', 'random'
+            "overlap": 2.0,
+        },
+        "camera": {
+            "num_views": 16,
+            "align_up": True,
+            "bg_color": [0.1, 0.7, 0.0],  # Options: 'random' or provide color.
+        },
+        "lighting": {
+            "alignment": "camera",  # Options: 'camera', 'up'
+            "jitter_sigma": math.pi / 10,
+        },
     }
-
-    def __init__(
-        self,
-        model_path: str,
-        fps: int = 10,
-        view: bool = True,
-        close_on_finish: bool = False,
-        finish_on_close: bool = True,
-        device: torch.device = torch.device("cuda:0"),
-        config: dict[str, Any] = {},
-        **kwargs,
-    ):
-        self.config = edict(**{**self._config_defaults, **config})
-        super().__init__(
-            model_path, fps, view, close_on_finish, finish_on_close, device
-        )
-
-    def load_model(self, path: str):
-        return MeshJacobianDeformation(
-            super().load_model(path), num_funcs=self.config["num_funcs"]
-        )
 
     def run(self):
         device = self.device
         config = self.config
-        # cameras = self._get_orbit_cameras(views=config["views"])
-        bg_color = torch.tensor([0.15, 1.0, 0.0]).to(self.device)
-        self.set_background(bg_color)
         df = DeepFloydGuidance(config, device)
         accum_steps = config["accum_steps"]
         generator = torch.Generator(device=self.model.device)
@@ -77,7 +68,6 @@ class TrainModelSDS(ViewableScript):
         ref_L = self.model.model.L_cotan
         txt = config.prompt
         n_views = config["views"]
-        start_color_fit = config["start_color_fit"]
         if isinstance(txt, list):
             prompts = [
                 p + ", a 3d rendering" if i != len(txt) - 1 else p
@@ -89,8 +79,7 @@ class TrainModelSDS(ViewableScript):
         text_embeds = df.encode_text_2(prompts, negative_prompt=[""], batch_size=1).to(
             device
         )
-        prompt_num = len(prompts)
-        n_samples = n_views * accum_steps  # * self.config["num_jitters"]
+        n_samples = n_views * accum_steps
         optimizer = torch.optim.Adam(
             [*self.model.parameters()],
             lr=config["lr"],
@@ -124,9 +113,6 @@ class TrainModelSDS(ViewableScript):
             j_loss = self.jacobian_loss() * jacobian_alpha * accum_steps
             l_loss = self.laplacian_loss(ref_L) * laplacian_alpha * accum_steps
             (j_loss + l_loss).backward()
-            # torch.nn.utils.clip_grad_value_(
-            #     [*self.model.parameters(), bg_color], config["max_grad"]
-            # )
             optimizer.step()
             print(
                 f"[Epoch {e}]\nReconstruction Loss: {epoch_loss},\nJacobian loss: {j_loss.item()},\nLaplacian loss: {l_loss.item()},\nBackground color: {bg_color.clone().detach().tolist()}"
@@ -163,45 +149,10 @@ class TrainModelSDS(ViewableScript):
         axis /= axis.norm()
         angle = torch.randn((), device=device) * jitter_sigma
         Q_rot = Quaternion.from_axis_angle(axis, angle)
-        # loc = camera.location
-        # loc = loc[[0, 2, 1]] * torch.tensor(
-        #     [-1.0, -1.0, 1.0], device=loc.device, dtype=loc.dtype
-        # )
         new_location = Q_rot.rotate_vector(
             camera.location[[0, 2, 1]] * torch.tensor([-1.0, -1.0, 1.0], device=device)
         )
         return LightSource(origin=new_location)
-
-    def _get_orbit_cameras(self, views: int = 8) -> list[Camera]:
-        cameras = []
-        camera = Camera(H=224, W=224).to(self.device)
-        camera.co.radius += 0.5
-        cameras.append(camera)
-        rot = Quaternion.from_axis_angle(
-            torch.tensor([0.0, 1.0, 0.0]), torch.tensor(2 * torch.pi / views)
-        ).to(self.device)
-        for _ in range(views - 1):
-            camera = camera.copy()
-            camera.co.Q *= rot
-            cameras.append(camera)
-        return cameras
-
-    def _jitter_cameras(self, cameras: list[Camera]) -> list[Camera]:
-        """
-        For every camera, produce ``num_jitters`` copies rotated by a random
-        small rotation (random axis, Gaussian angle with std ``jitter_sigma``
-        in radians). Fresh rotations are sampled on every call.
-        """
-        jittered = []
-        for cam in cameras:
-            for _ in range(self.config["num_jitters"]):
-                jcam = cam.copy()
-                axis = torch.randn(3)
-                axis = axis / axis.norm().clamp_min(1e-8)
-                angle = torch.randn(()) * self.config["jitter_sigma"]
-                jcam.co.Q *= Quaternion.from_axis_angle(axis, angle).to(jcam.device)
-                jittered.append(jcam)
-        return jittered
 
     def get_renders(
         self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None
@@ -223,3 +174,8 @@ class TrainModelSDS(ViewableScript):
             B, -1, H, W
         )
         return renders
+
+    def get_bg_color(self) -> Float[Tensor, "3"]:
+        if hasattr(self, "bg_color"):
+            return self.bg_color
+        bg = self.config.camera.bg_color
