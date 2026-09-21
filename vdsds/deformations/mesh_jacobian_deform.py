@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+from jaxtyping import Float
 
 from ..representations.mesh import Mesh
 from ..utils.camera import Camera
@@ -51,6 +52,17 @@ class MeshJacobianDeformation(Deformation):
         instance.V_deform = SphericalGaussianBasis.from_state_dict(v_deform_keys)
         return instance
 
+    def jacobians_3d(
+        self, delta: Float[Tensor,] | None = None
+    ) -> Float[Tensor, "B F 3 3"]:
+        if delta is None:
+            return self.poisson.expand_tangent_jacobians(
+                self.J_deform.weights.permute(1, 0, 2).reshape - 1, -1, 3, 2
+            )
+        return self.poisson.expand_tangent_jacobians(
+            self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 2)
+        )
+
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
 
@@ -71,10 +83,9 @@ class MeshJacobianDeformation(Deformation):
         delta = m.centroid - camera_loc
         # Tangent-frame prediction (F, 3, 2) -> full jacobian via the
         # face tangential bases, then compose with the source jacobian.
-        # J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 2)
+
         # J_disp = (
-        #     torch.eye(3, device=self.device, dtype=J_tan.dtype)[None]
-        #     + self.poisson.expand_tangent_jacobians(J_tan[None])
+        #     torch.eye(3, device=self.device)[None] + self.jacobians_3d(delta)
         # ).squeeze(0)
         J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 3)
         J_disp = (

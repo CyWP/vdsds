@@ -9,6 +9,8 @@ from torch import Tensor
 from .math import RAD2DEG
 from .quaternion import Quaternion
 
+from .conventions import UP, FORWARD
+
 
 class CameraCoordinates:
     """
@@ -24,7 +26,7 @@ class CameraCoordinates:
         self.origin = torch.tensor([0.0, 0.0, 0.0]) if origin is None else origin
         self.radius: float = radius
         self.Q = Quaternion.identity() if Q is None else Q
-        self.up = torch.tensor([0, 0, 1])
+        self.up = torch.tensor(UP)
 
     @property
     def device(self) -> torch.device:
@@ -105,7 +107,7 @@ class Camera:
         return (
             co.origin
             + co.Q.rotate_vector(
-                torch.tensor([0, 0, -1], dtype=self.dtype, device=self.device)
+                torch.tensor(FORWARD, dtype=self.dtype, device=self.device)
             )
             * co.radius
         )
@@ -283,9 +285,9 @@ class Camera:
         Q = Quaternion.random()
         if point_upwards:
             R = Q.R()
-            forward = R[1, :]
-            up = -R[2, :]
-            world_up = torch.tensor([0.0, 0.0, 1.0])
+            forward = R[2, :]
+            up = -R[1, :]
+            world_up = torch.tensor(UP)
 
             # Project both axes onto the plane orthogonal to the forward axis.
             up_perp = up - (up @ forward) * forward
@@ -297,10 +299,14 @@ class Camera:
                     torch.linalg.cross(up_perp, w_perp) @ forward,
                     up_perp @ w_perp,
                 )
-                Q = Q * Quaternion.from_axis_angle(forward, -angle)
+                Q *= Quaternion.from_axis_angle(forward, -angle)
+        if origin is None:
+            origin = torch.tensor([0.0, 0.0, 0.0])
         cam = Camera(
             H=H,
             W=W,
             co=CameraCoordinates(origin=origin, Q=Q, radius=radius),
         )
+        if require_grad:
+            cam.requires_grad_(require_grad)
         return cam

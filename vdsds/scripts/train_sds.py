@@ -9,6 +9,7 @@ from torch import Tensor
 
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..utils.camera import Camera
+from ..utils.conventions import UP, FORWARD
 from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.img import Splimage
 from ..utils.light import LightSource
@@ -20,16 +21,17 @@ logger = logging.getLogger(__name__)
 
 class TrainModelSDS(ViewableScript):
     _config_defaults: ClassVar = {
-        "epochs": 200,
-        "lr": 0.01,
+        "epochs": 400,
+        "lr": 0.005,
         "sds_alpha": 1.0,
-        "jacobian_alpha": 500.0,
-        "accum_steps": 2,
+        "jacobian_alpha": 350.0,
+        "laplacian_alpha": 2000.0,
+        "accum_steps": 1,
         "model_size": "M",
         "dtype": "float16",
         "num_funcs": 6,
         "num_jitters": 3,
-        "views": 12,
+        "views": 100,
         "max_grad": 0.1,
         "cpu_offload": False,
         "guidance_scale": 7.5,
@@ -63,16 +65,18 @@ class TrainModelSDS(ViewableScript):
         device = self.device
         config = self.config
         # cameras = self._get_orbit_cameras(views=config["views"])
-        bg_color = torch.tensor([0.15, 1.0, 0.0]).to(self.device).requires_grad_(True)
+        bg_color = torch.tensor([0.15, 1.0, 0.0]).to(self.device)
         self.set_background(bg_color)
         df = DeepFloydGuidance(config, device)
         accum_steps = config["accum_steps"]
         generator = torch.Generator(device=self.model.device)
         generator.manual_seed(config["seed"])
         self.model.train(train_model=False)
-        self.model.J_deform.log_sigmas.requires_grad_(False)
+        # self.model.J_deform.log_sigmas.requires_grad_(False)
         sds_alpha = config["sds_alpha"]
         jacobian_alpha = config["jacobian_alpha"]
+        laplacian_alpha = config["laplacian_alpha"]
+        ref_L = self.model.model.L_cotan
         txt = config.prompt
         n_views = config["views"]
         start_color_fit = config["start_color_fit"]
@@ -88,26 +92,30 @@ class TrainModelSDS(ViewableScript):
             device
         )
         prompt_num = len(prompts)
-        n_samples = n_views * self.config["num_jitters"] * accum_steps
+        n_samples = n_views * accum_steps  # * self.config["num_jitters"]
         optimizer = torch.optim.Adam(
             [*self.model.parameters()],
             lr=config["lr"],
         )
         cameras = self._get_orbit_cameras(views=n_views)
+        from pathlib import Path
+
+        path = Path("./view_test")
+        path.mkdir(exist_ok=True)
         for e in range(config["epochs"]):
             epoch_loss = 0.0
             optimizer.zero_grad()
-            # cameras = [
-            #     Camera.random_rot(H=224, W=224, radius=1.5, point_upwards=True).to(
-            #         self.device
-            #     )
-            #     for _ in range(n_views)
-            # ]
+            cameras = [
+                Camera.random_rot(H=224, W=224, radius=1.5, point_upwards=True).to(
+                    self.device
+                )
+                for _ in range(n_views)
+            ]
             for _ in range(accum_steps):
-                # for cam in cameras:
-                for cam in [*cameras, *self._jitter_cameras(cameras)]:
+                for i, cam in enumerate(cameras):
+                    # for cam in [*cameras, *self._jitter_cameras(cameras)]:
                     tgt_render = self.get_renders([cam], bg=bg_color)
-                    # breakpoint()
+                    # Splimage(tgt_render.clone().detach()).save(path / f"{i:03}.png")
                     loss = (
                         df.SDS(tgt_render, text_embeds, controller=None)["loss_sds"]
                         / n_samples
@@ -115,26 +123,56 @@ class TrainModelSDS(ViewableScript):
                     )
                     loss.backward()
                     epoch_loss += loss.item()
-            loss = self.jacobian_loss() * jacobian_alpha
+            j_loss = self.jacobian_loss() * jacobian_alpha * accum_steps
+            l_loss = self.laplacian_loss(ref_L) * laplacian_alpha * accum_steps
+            (j_loss + l_loss).backward()
             # torch.nn.utils.clip_grad_value_(
             #     [*self.model.parameters(), bg_color], config["max_grad"]
             # )
             optimizer.step()
             print(
-                f"[Epoch {e}] Reconstruction Loss: {epoch_loss}, Jacobian loss: {loss.item()}, Background color: {bg_color.clone().detach().tolist()}"
+                f"[Epoch {e}]\nReconstruction Loss: {epoch_loss},\nJacobian loss: {j_loss.item()},\nLaplacian loss: {l_loss.item()},\nBackground color: {bg_color.clone().detach().tolist()}"
             )
+
+    def finish(self):
+        pass
 
     def jacobian_loss(self) -> torch.Tensor:
         J_def = self.model.J_deform
         W = J_def.weights
-        return W.mean() ** 2
+        return (W**2).mean()
 
-    def cotan_loss(self, ref_L) -> torch.Tensor:
-        w = self.model.V_deform.weights
-        loss = torch.tensor(0.0, device=w.device)
-        for i in range(w.shape[1]):
-            loss += (((ref_L @ w[:, i]) ** 2) * 2**i).mean()
-        return loss
+    def laplacian_loss(self, ref_L) -> torch.Tensor:
+        W = self.model.J_deform.weights
+        B, N, D = W.shape
+        W = W.permute(1, 0, 2).reshape(N, -1, 3, 3)
+        J = W + torch.eye(3, device=W.device, dtype=W.dtype)[None, None]
+        J = torch.einsum("bfij,cfjk->bfik", J, self.model.J_src)
+        V_disps = self.model.poisson.solve_poisson(J) - self.model.model.V[None]
+        B, N, C = V_disps.shape
+        Y = (
+            torch.sparse.mm(ref_L, V_disps.permute(1, 0, 2).reshape(N, B * C))
+            .reshape(N, B, C)
+            .permute(1, 0, 2)
+        )
+        return (Y**2).mean()
+
+    def randomized_light(
+        self, camera: Camera, jitter_sigma: float = 0.5
+    ) -> LightSource:
+        device = camera.device
+        axis = torch.rand((3,), device=device)
+        axis /= axis.norm()
+        angle = torch.randn((), device=device) * jitter_sigma
+        Q_rot = Quaternion.from_axis_angle(axis, angle)
+        # loc = camera.location
+        # loc = loc[[0, 2, 1]] * torch.tensor(
+        #     [-1.0, -1.0, 1.0], device=loc.device, dtype=loc.dtype
+        # )
+        new_location = Q_rot.rotate_vector(
+            camera.location[[0, 2, 1]] * torch.tensor([-1.0, -1.0, 1.0], device=device)
+        )
+        return LightSource(origin=new_location)
 
     def _get_orbit_cameras(self, views: int = 8) -> list[Camera]:
         cameras = []
@@ -171,10 +209,7 @@ class TrainModelSDS(ViewableScript):
         self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None
     ) -> Float[Tensor, "B 3 H W"]:
         renders = torch.cat(
-            [
-                self.model.rasterize(cam, LightSource().to(cam.device))
-                for cam in cameras
-            ],
+            [self.model.rasterize(cam, self.randomized_light(cam)) for cam in cameras],
             dim=0,
         )
         if bg is not None:

@@ -106,7 +106,7 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         uv_idx = F.clone()
         mtl = Splimage(mesh.visual.material.baseColorTexture)._tensor
     # V[:, 2] *= -1
-    V = torch.stack([V[:, 2], V[:, 0], -V[:, 1]], dim=1)
+    V = -torch.stack([V[:, 2], V[:, 0], V[:, 1]], dim=1)
     return {
         "V": V,
         "F": F,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Literal, Union
 
 import numpy as np
@@ -240,7 +241,7 @@ class ImgUtils:
         W: int,
         device: torch.device,
         padding: tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Float[Tensor, 2 (H+pt+pb) (W+pl+pr)]:
+    ) -> Float[Tensor, 2(H + pt + pb)(W + pl + pr)]:
         """Generate normalized pixel coordinates.
 
         Both axes independently fill ``[0, 1]`` so each pixel center lies
@@ -389,7 +390,7 @@ class ImgUtils:
     def coords_pad(
         co: Float[Tensor, "C H W"],
         padding: tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Float[Tensor, C (H+pad_top+pad_bottom) (W+pad_left+pad_right)]:
+    ) -> Float[Tensor, C(H + pad_top + pad_bottom)(W + pad_left + pad_right)]:
         pad_top, pad_bottom, pad_left, pad_right = padding
         if padding == (0, 0, 0, 0):
             return co
@@ -1339,6 +1340,22 @@ class Splimage:
         else:
             pil.show()
 
+    def save(self, path: Path) -> None:
+        """
+        Save the image via PIL's default save method.
+        """
+        if self._tensor.shape[1] == 1:
+            rgb = self._tensor.repeat(1, 3, 1, 1)
+            pil = ImgUtils.tensor2pil(rgb)
+        else:
+            pil = self.to_pil()
+        if isinstance(pil, list):
+            flen = len(str(len(pil))) + 1
+            for i, img in enumerate(pil):
+                img.save(path.parent / f"{path.stem}_{i:0{flen}}{path.suffix}")
+        else:
+            pil.save(path)
+
     def __add__(self, other: Splimage | float | Tensor) -> Splimage:
         return self._apply_op(other, torch.add)
 
@@ -1388,9 +1405,7 @@ class Splimage:
             return other._tensor
         return other
 
-    def _apply_op(
-        self, other: Splimage | float | Tensor, op: Callable
-    ) -> Splimage:
+    def _apply_op(self, other: Splimage | float | Tensor, op: Callable) -> Splimage:
         result = op(self._tensor, self._resolve_tensor(other))
         new = Splimage(result)
         new._padding = self._padding
