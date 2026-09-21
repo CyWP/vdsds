@@ -9,8 +9,8 @@ from torch import Tensor
 from ..deformations.base import Deformation
 from ..representations.base import Model
 from ..utils.camera import Camera
-from ..utils.light import LightSource
 from ..utils.img import ImgUtils, Splimage
+from ..utils.light import LightSource
 from .keymap import K_CTRL, K_SHIFT
 
 

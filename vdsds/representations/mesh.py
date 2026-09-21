@@ -10,9 +10,8 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from ..utils.camera import Camera
-from ..utils.conventions import UP, OPENGL_CONVERSION_MTX, NVDIFFRAST_CONVERSION_MTX
+from ..utils.conventions import NVDIFFRAST_CONVERSION_MTX, OPENGL_CONVERSION_MTX, UP
 from ..utils.light import LightSource
-from ..utils.img import Splimage
 from .base import Model
 
 logger = logging.getLogger(__name__)
@@ -176,7 +175,7 @@ class Mesh(Model):
         return torch.cross(ab, ac, dim=1)
 
     @property
-    def neighbour_count(self) -> Float[Tensor, "V"]:
+    def neighbour_count(self) -> Float[Tensor, V]:
         counts = torch.zeros(self.V.shape[0], device=self.V.device)
         counts = counts.index_add(
             0, self.F.view(-1), torch.ones(self.F.numel(), device=self.V.device)

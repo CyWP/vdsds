@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import torch
-from torch import Tensor
 from jaxtyping import Float
+from torch import Tensor
 
 from ..representations.mesh import Mesh
 from ..utils.camera import Camera
@@ -11,14 +11,20 @@ from ..utils.spherical_basis import SphericalGaussianBasis
 from .base import Deformation
 
 
-class MeshJacobianDeformation(Deformation):
-    def __init__(self, model: Mesh, num_funcs: int = 8):
+class VDFullJacobianDeformation(Deformation):
+    def __init__(
+        self,
+        model: Mesh,
+        num_funcs: int = 8,
+        centroid_init: str = "fibonacci",
+        overlap: float = 2.0,
+        **kwargs,
+    ):
         super().__init__(model)
         self.poisson = PoissonSystem.from_mesh(model.V, model.F)
-        # The network predicts a tangent-frame (3x2) deformation jacobian
-        # per face; it is expanded to a full 3x3 via expand_tangent_jacobians
-        # before composing with the source jacobian.
-        self.J_deform = SphericalGaussianBasis(num_funcs, 9, model.num_F)
+        self.J_deform = SphericalGaussianBasis(
+            num_funcs, 9, model.num_F, init=centroid_init, sigma_overlap=overlap
+        )
         self._cached = False
 
     def to(self, *args, **kwargs):
@@ -33,7 +39,7 @@ class MeshJacobianDeformation(Deformation):
     @classmethod
     def from_state_dict(
         cls, state_dict: dict[str, Tensor], mesh_class
-    ) -> MeshJacobianDeformation:
+    ) -> VDFullJacobianDeformation:
         model_keys = {}
         v_deform_keys = {}
         direct_keys = {}
@@ -56,12 +62,8 @@ class MeshJacobianDeformation(Deformation):
         self, delta: Float[Tensor,] | None = None
     ) -> Float[Tensor, "B F 3 3"]:
         if delta is None:
-            return self.poisson.expand_tangent_jacobians(
-                self.J_deform.weights.permute(1, 0, 2).reshape - 1, -1, 3, 2
-            )
-        return self.poisson.expand_tangent_jacobians(
-            self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 2)
-        )
+            return self.J_deform.weights.permute(1, 0, 2).reshape(-1, -1, 3, 3)
+        return self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 3)
 
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
@@ -81,16 +83,9 @@ class MeshJacobianDeformation(Deformation):
         camera_loc = camera.location.unsqueeze(0)
         m = self.model
         delta = m.centroid - camera_loc
-        # Tangent-frame prediction (F, 3, 2) -> full jacobian via the
-        # face tangential bases, then compose with the source jacobian.
-
-        # J_disp = (
-        #     torch.eye(3, device=self.device)[None] + self.jacobians_3d(delta)
-        # ).squeeze(0)
-        J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 3)
-        J_disp = (
-            torch.eye(3, device=self.device, dtype=J_tan.dtype)[None] + J_tan[None]
-        ).squeeze(0)
-        J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp[None], self.J_src)
+        J_disp = torch.eye(3, device=self.device, dtype=self.J_deform.dtype)[
+            None
+        ] + self.jacobians_3d(delta)
+        J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp, self.J_src)
         V_new = self.poisson.solve_poisson(J_transformed)[0]
         return Mesh(V=V_new, F=m.F)

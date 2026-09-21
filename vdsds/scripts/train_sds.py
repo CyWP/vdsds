@@ -9,9 +9,7 @@ from torch import Tensor
 
 from ..deformations.mesh_jacobian_deform import MeshJacobianDeformation
 from ..utils.camera import Camera
-from ..utils.conventions import UP, FORWARD
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..utils.img import Splimage
 from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
 from .base import ViewableScript
@@ -22,16 +20,16 @@ logger = logging.getLogger(__name__)
 class TrainModelSDS(ViewableScript):
     _config_defaults: ClassVar = {
         "epochs": 400,
-        "lr": 0.005,
+        "lr": 0.0075,
         "sds_alpha": 1.0,
-        "jacobian_alpha": 350.0,
-        "laplacian_alpha": 2000.0,
-        "accum_steps": 1,
+        "jacobian_alpha": 1000.0,
+        "laplacian_alpha": 10000.0,
+        "accum_steps": 2,
         "model_size": "M",
         "dtype": "float16",
         "num_funcs": 6,
         "num_jitters": 3,
-        "views": 100,
+        "views": 16,
         "max_grad": 0.1,
         "cpu_offload": False,
         "guidance_scale": 7.5,

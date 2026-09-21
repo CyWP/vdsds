@@ -6,10 +6,9 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
+from .conventions import FORWARD, UP
 from .math import RAD2DEG
 from .quaternion import Quaternion
-
-from .conventions import UP, FORWARD
 
 
 class CameraCoordinates:

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from .representations.mesh import Mesh
 from .representations.textured_mesh import TexturedMesh
 from .representations.vertextured_mesh import VerTexturedMesh
 from .utils.loading import load_glb, load_obj
