@@ -25,7 +25,7 @@ class TrainModelSDS(ViewableScript):
         },
         "optim": {
             "epochs": 400,
-            "lr": 0.0075,
+            "lr": 0.0025,
             "accum_steps": 2,
             "seed": 42,
         },
@@ -144,7 +144,10 @@ class TrainModelSDS(ViewableScript):
         self.model.save(deformation_file)
 
     def jacobian_loss(self) -> torch.Tensor:
-        return (self.model.J_deform.weights**2).mean()
+        J_def = self.model.J_deform
+        if hasattr(J_def, "weights"):
+            return (self.model.J_deform.weights**2).mean()
+        return (self.model.J_deform**2).mean()
 
     def laplacian_loss(self, ref_L) -> torch.Tensor:
         J = torch.einsum("bfij,cfjk->bfik", self.model.jacobians_3d(), self.model.J_src)

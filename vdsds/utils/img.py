@@ -71,7 +71,7 @@ class ImgUtils:
         B, C, H, W = x.shape
         mode = "RGB" if C == 3 else "RGBA"
         img = ImgUtils.tensor2img(x, clamp=True)
-        img_np = (img.cpu().numpy() * 255).astype(np.uint8)
+        img_np = (img.clone().detach().cpu().numpy() * 255).astype(np.uint8)
         imgs = []
         for i in range(B):
             imgs.append(Image.fromarray(img_np[i], mode=mode))

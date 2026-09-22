@@ -26,6 +26,7 @@ class FullJacobianDeformation(Deformation):
             torch.eye(3, device=device, dtype=dtype)[None]
             .repeat(model.num_F, 1, 1)
             .contiguous()
+            * 0.0
         )
         self._cached = False
 
@@ -51,7 +52,10 @@ class FullJacobianDeformation(Deformation):
     def jacobians_3d(
         self, delta: Float[Tensor,] | None = None
     ) -> Float[Tensor, "B F 3 3"]:
-        return self.J_deform[None]
+        return (
+            self.J_deform
+            + torch.eye(3, device=self.J_deform.device, dtype=self.J_deform.dtype)[None]
+        )[None]
 
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
@@ -68,6 +72,6 @@ class FullJacobianDeformation(Deformation):
         """
         if not self._cached:
             self.cache_solver()
-        J_transformed = torch.einsum("bfij,bfjk->bfik", self.jacobians_3d, self.J_src)
+        J_transformed = torch.einsum("bfij,bfjk->bfik", self.jacobians_3d(), self.J_src)
         V_new = self.poisson.solve_poisson(J_transformed)[0]
         return Mesh(V=V_new, F=self.model.F)

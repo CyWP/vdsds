@@ -4,6 +4,7 @@ from ..utils.config import Config
 from .base import Script
 from .train_sds import TrainModelSDS
 from .view_model import ViewModel
+from .orbit import OrbitFrames
 
 
 def get_script(name: str, device: torch.device, config: Config, **kwargs) -> Script:
@@ -11,6 +12,8 @@ def get_script(name: str, device: torch.device, config: Config, **kwargs) -> Scr
         return ViewModel(device, config, **kwargs)
     elif name == "train_sds":
         return TrainModelSDS(device, config, **kwargs)
+    elif name == "orbit":
+        return OrbitFrames(device, config, **kwargs)
     else:
         raise ValueError(f"Task '{name}' is unrecognized.")
 

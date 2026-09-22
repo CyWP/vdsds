@@ -1,5 +1,6 @@
 #Test runs
 test_runs/
+recordings/
 #App files
 *.vd3d
 *.vd3dm
