@@ -1,14 +1,14 @@
 import threading
 import traceback
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import torch
-from easydict import EasyDict as edict
 from PySide6.QtCore import QTimer
 
 from ..deformations import get_deformation
 from ..rasterizable import Rasterizable
-from ..representations import load_model
+from ..representations import get_model
+from ..utils.config import Config
 from ..view import View
 
 
@@ -17,23 +17,45 @@ class Script:
     Base class for runnable scripts. Subclasses implement :meth:`run`.
     """
 
+    _default_config_overrides: ClassVar[Config] = Config({})
+
+    def __init__(
+        self,
+        device: torch.device,
+        config: Config,
+        **kwargs,
+    ):
+        cfg = self.default_config
+        cfg.update(config)
+        self.config = cfg
+
+    def launch(self) -> None:
+        """
+        Run the script.
+        """
+        self.run()
+
     def run(self):
         raise NotImplementedError
 
+    @property
+    def default_config(self) -> Config:
+        config = Config({})
 
-class ViewableScriptConfig(edict):
-    _defaults: ClassVar[dict[str, any]] = {
-        "window": {
-            "fps": 30,
-            "view": True,
-            "close_on_finish": False,
-            "finish_on_close": True,
-            "bg_color": [0.2, 0.2, 0.2],
-        }
-    }
+        for cls in reversed(type(self).__mro__):
+            overrides = cls.__dict__.get("_default_config_overrides")
+            if overrides is not None:
+                config.update(overrides)
 
-    def __init__(self, **kwargs):
-        super().__init__(**{**self._defaults, **kwargs})
+        return config
+
+    def load_model(self) -> Rasterizable:
+        cfg = self.config
+        # ToDO: loading deformation case
+        model = get_model(cfg.path.model, **cfg.model)
+        if hasattr(cfg, "deformation"):
+            model = get_deformation(model, **cfg.deformation)
+        return model
 
 
 class ViewableScript(Script):
@@ -48,19 +70,29 @@ class ViewableScript(Script):
     visualizes it.
     """
 
-    _config_defaults: ClassVar[dict[str, any]] = {
-        "model": {"name": "textured_mesh", "path": None}
-    }
+    _default_config_overrides: ClassVar[Config] = Config(
+        {
+            "window": {
+                "fps": 30,
+                "view": True,
+                "close_on_finish": False,
+                "finish_on_close": True,
+                "bg_color": [0.2, 0.2, 0.2],
+            },
+            "model": {
+                "name": "textured_mesh",
+            },
+            "paths": {"model": None},
+        }
+    )
 
     def __init__(
         self,
         device: torch.device,
-        model_path: str,
-        config: dict[str, Any] | None = None,
+        config: Config,
         **kwargs,
     ):
-        super().__init__()
-        self.config = ViewableScriptConfig(**{**self._config_defaults, **config})
+        super().__init__(device, config)
         cfg = self.config
         self.model = self.load_model().to(device)
         self._closed = threading.Event()
@@ -90,13 +122,6 @@ class ViewableScript(Script):
         self._closed.set()
         if self.config.window.finish_on_close:
             self.finish()
-
-    def load_model(self) -> Rasterizable:
-        cfg = self.config
-        model = load_model(cfg.model.path, **cfg.model)
-        if hasattr(cfg, "deformation"):
-            model = get_deformation(model, **cfg.deformation)
-        return model
 
     def launch(self) -> int:
         """

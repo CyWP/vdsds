@@ -62,8 +62,11 @@ class VDFullJacobianDeformation(Deformation):
         self, delta: Float[Tensor,] | None = None
     ) -> Float[Tensor, "B F 3 3"]:
         if delta is None:
-            return self.J_deform.weights.permute(1, 0, 2).reshape(-1, -1, 3, 3)
-        return self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 3)
+            B, N, C = self.J_deform.weights.shape
+            j3d = self.J_deform.weights.permute(1, 0, 2).reshape(N, -1, 3, 3)
+        else:
+            j3d = self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 3)
+        return j3d + torch.eye(3, device=self.device, dtype=j3d.dtype)
 
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
@@ -83,9 +86,8 @@ class VDFullJacobianDeformation(Deformation):
         camera_loc = camera.location.unsqueeze(0)
         m = self.model
         delta = m.centroid - camera_loc
-        J_disp = torch.eye(3, device=self.device, dtype=self.J_deform.dtype)[
-            None
-        ] + self.jacobians_3d(delta)
-        J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp, self.J_src)
+        J_transformed = torch.einsum(
+            "bfij,bfjk->bfik", self.jacobians_3d(delta), self.J_src
+        )
         V_new = self.poisson.solve_poisson(J_transformed)[0]
         return Mesh(V=V_new, F=m.F)

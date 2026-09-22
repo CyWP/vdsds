@@ -7,7 +7,9 @@ from .textured_mesh import TexturedMesh
 from .vertextured_mesh import VerTexturedMesh
 
 
-def load_model(self, path: Path, name: str, **kwargs) -> Model:
+def get_model(path: str | Path, name: str = "textured_mesh", **kwargs) -> Model:
+    if isinstance(path, str):
+        path = Path(path)
     extension = path.suffix
     if extension == ".obj":
         data = load_obj(path)

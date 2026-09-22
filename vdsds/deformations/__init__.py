@@ -5,7 +5,7 @@ from .vd_jacobian_full_deform import VDFullJacobianDeformation
 from .vd_jacobian_restrained_deform import VDRestrainedJacobianDeformation
 
 
-def get_deformation(self, model: Model, name: str, **kwargs) -> Deformation:
+def get_deformation(model: Model, name: str, **kwargs) -> Deformation:
     if name == "full":
         return FullJacobianDeformation(model, **kwargs)
     elif name == "vd_full":

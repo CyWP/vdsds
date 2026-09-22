@@ -62,12 +62,15 @@ class VDRestrainedJacobianDeformation(Deformation):
         self, delta: Float[Tensor,] | None = None
     ) -> Float[Tensor, "B F 3 3"]:
         if delta is None:
-            return self.poisson.expand_tangent_jacobians(
-                self.J_deform.weights.permute(1, 0, 2).reshape(-1, -1, 3, 2)
+            B, N, C = self.J_deform.weights.shape
+            j3d = self.poisson.expand_tangent_jacobians(
+                self.J_deform.weights.permute(1, 0, 2).reshape(N, -1, 3, 2)
             )
-        return self.poisson.expand_tangent_jacobians(
-            self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 2)
-        )
+        else:
+            j3d = self.poisson.expand_tangent_jacobians(
+                self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 2)
+            )
+        return j3d + torch.eye(3, device=self.device, dtype=j3d.dtype)
 
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
@@ -84,19 +87,11 @@ class VDRestrainedJacobianDeformation(Deformation):
         """
         if not self._cached:
             self.cache_solver()
-        camera_loc = camera.location.unsqueeze(0)
+        camera_loc = camera.location
         m = self.model
         delta = m.centroid - camera_loc
-        # Tangent-frame prediction (F, 3, 2) -> full jacobian via the
-        # face tangential bases, then compose with the source jacobian.
-
-        # J_disp = (
-        #     torch.eye(3, device=self.device)[None] + self.jacobians_3d(delta)
-        # ).squeeze(0)
-        J_tan = self.J_deform.from_cartesian(delta).reshape(-1, 3, 3)
-        J_disp = (
-            torch.eye(3, device=self.device, dtype=J_tan.dtype)[None] + J_tan[None]
-        ).squeeze(0)
-        J_transformed = torch.einsum("bfij,bfjk->bfik", J_disp[None], self.J_src)
+        J_transformed = torch.einsum(
+            "bfij,bfjk->bfik", self.jacobians_3d(delta), self.J_src
+        )
         V_new = self.poisson.solve_poisson(J_transformed)[0]
         return Mesh(V=V_new, F=m.F)

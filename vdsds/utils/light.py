@@ -6,13 +6,15 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
+from .conventions import UP
+
 
 class LightSource:
     """
     Just a representation of a point light
     """
 
-    _up: ClassVar = [0.0, 0.0, -1.0]
+    _up: ClassVar = [UP[0], UP[2], UP[1]]
 
     def __init__(
         self,
