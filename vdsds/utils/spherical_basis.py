@@ -115,12 +115,12 @@ class SphericalGaussianBasis(nn.Module):
         raise ValueError(f"Unknown init: {init}")
 
     @classmethod
-    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> SphericalGaussianBasis:
-        """Reconstruct an instance from its parameter tensors.
+    def from_dict(cls, data: dict[str, Tensor]) -> SphericalGaussianBasis:
+        """Reconstruct an instance from its dict representation.
 
         Args:
-            state_dict: Dict with "weights" and optionally
-                "log_sigmas"/"centroids".
+            data: Dict with "weights" and optionally "log_sigmas"/"centroids",
+                as produced by :meth:`to_dict`.
 
         Note:
             Checkpoints in the old format (2D polar "centroids" and
@@ -129,16 +129,30 @@ class SphericalGaussianBasis(nn.Module):
         Returns:
             out: SphericalGaussianBasis restored from the given tensors.
         """
-        weights = state_dict["weights"]
+        weights = data["weights"]
         batch_size, num_funcs, num_dims = weights.shape
         return cls(
             num_funcs=num_funcs,
             num_dims=num_dims,
             batch_size=batch_size,
             weights=weights,
-            log_sigmas=state_dict.get("log_sigmas"),
-            centroids=state_dict.get("centroids"),
+            log_sigmas=data.get("log_sigmas"),
+            centroids=data.get("centroids"),
         )
+
+    def to_dict(self) -> dict[str, Tensor]:
+        """Serializes the basis into a plain dict of tensors.
+
+        Tensors are cloned, detached and moved to cpu.
+
+        Returns:
+            out: Dict with "weights", "log_sigmas" and "centroids".
+        """
+        return {
+            "weights": self.weights.clone().detach().cpu(),
+            "log_sigmas": self.log_sigmas.clone().detach().cpu(),
+            "centroids": self.centroids.clone().detach().cpu(),
+        }
 
     def copy(self) -> SphericalGaussianBasis:
         """Deep copy with cloned parameters.

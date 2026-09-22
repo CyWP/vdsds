@@ -7,6 +7,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
+from .base import Model
 from .mesh import Mesh
 
 
@@ -30,20 +31,21 @@ class TexturedMesh(Mesh):
         super()._apply_tensors(tensor_dict)
         self.uv_co = tensor_dict["uv_co"]
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            **super().to_dict(),
-            "uv_co": self.uv_co,
-        }
+    def _dict_data(self) -> dict[str, Any]:
+        return {**super()._dict_data(), "uv_co": self.uv_co}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
+    def _from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
         return cls(
             V=data["V"],
             F=data["F"],
             uv_co=data["uv_co"],
             texture=data["texture"],
         )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
+        return Model.from_dict(data)
 
     def copy(self) -> TexturedMesh:
         return TexturedMesh(

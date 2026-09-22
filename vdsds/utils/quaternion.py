@@ -28,8 +28,8 @@ class Quaternion:
     def dtype(self) -> torch.dtype:
         return self.q.dtype
 
-    def to(self, *args, **kwargs) -> Quaternion:
-        self.q = self.q.to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> Quaternion:
+        self.q = self.q.to(device)
         return self
 
     def requires_grad_(self, mode: bool):

@@ -36,8 +36,8 @@ class SphericalHarmonic(nn.Module):
         self.register_buffer("ones_shape", torch.ones((self.batch_size, 1)))
 
     @classmethod
-    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> SphericalHarmonic:
-        weights = state_dict["weights"]
+    def from_dict(cls, data: dict[str, Tensor]) -> SphericalHarmonic:
+        weights = data["weights"]
         batch_size, num_dims, num_coeffs = weights.shape
         degree = int(math.sqrt(num_coeffs)) - 1
         return SphericalHarmonic(
@@ -46,6 +46,9 @@ class SphericalHarmonic(nn.Module):
             batch_size=batch_size,
             weights=weights,
         )
+
+    def to_dict(self) -> dict[str, Tensor]:
+        return {"weights": self.weights.clone().detach().cpu()}
 
     def copy(self) -> SphericalHarmonic:
         return SphericalHarmonic(

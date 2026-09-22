@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -27,36 +29,28 @@ class VDFullJacobianDeformation(Deformation):
         )
         self._cached = False
 
-    def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
-        self.poisson = self.poisson.to(*args, **kwargs)
+    def to(self, device: torch.device | str):
+        super().to(device)
+        self.poisson = self.poisson.to(device)
         return self
+
+    def _dict_data(self) -> dict[str, Any]:
+        return {
+            **super()._dict_data(),
+            "num_funcs": self.J_deform.num_funcs,
+            "J_deform": self.J_deform.to_dict(),
+        }
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> VDFullJacobianDeformation:
+        model = Mesh.from_dict(data["model"])
+        instance = cls(model=model, num_funcs=data["num_funcs"])
+        instance.J_deform = SphericalGaussianBasis.from_dict(data["J_deform"])
+        return instance
 
     def cache_solver(self):
         self.J_src = self.poisson.jacobians_from_vertices(self.model.V[None])
         self._cached = True
-
-    @classmethod
-    def from_state_dict(
-        cls, state_dict: dict[str, Tensor], mesh_class
-    ) -> VDFullJacobianDeformation:
-        model_keys = {}
-        v_deform_keys = {}
-        direct_keys = {}
-
-        for key, value in state_dict.items():
-            if key.startswith("model."):
-                model_keys[key[6:]] = value
-            elif key.startswith("V_deform."):
-                v_deform_keys[key[9:]] = value
-            else:
-                direct_keys[key] = value
-
-        model = Mesh.from_state_dict(model_keys)
-
-        instance = cls(model=model)
-        instance.V_deform = SphericalGaussianBasis.from_state_dict(v_deform_keys)
-        return instance
 
     def jacobians_3d(
         self, delta: Float[Tensor,] | None = None

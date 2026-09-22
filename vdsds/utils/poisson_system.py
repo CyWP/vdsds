@@ -200,7 +200,7 @@ class PoissonSystem:
     ) -> Float[Tensor, "B F 3 3"]:
         return self.restrict_jacobians(self.jacobians_from_vertices(V))
 
-    def to(self, device: torch.device, **kwargs) -> PoissonSystem:
+    def to(self, device: torch.device | str) -> PoissonSystem:
         """Moves all tensors to the given device.
 
         Args:
@@ -216,7 +216,7 @@ class PoissonSystem:
         self.rhs = self.rhs.to(device)
         self.W = self.W.to(device)
         self.my_splu = None
-        self.device = device
+        self.device = torch.device(device)
         return self
 
 

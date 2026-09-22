@@ -66,28 +66,38 @@ class Mesh(Model):
             "V": self.V,
             "F": self.F,
             "texture": self.texture,
-            "up": self.up,
         }
 
     def _apply_tensors(self, tensor_dict: dict[str, Tensor]):
         self.V = tensor_dict["V"]
         self.F = tensor_dict["F"]
         self.texture = tensor_dict["texture"]
-        self.up = tensor_dict["up"]
 
-    def to(self, *args, **kwargs) -> Mesh:
-        super().to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> Mesh:
+        super().to(device)
+        self.opengl_conversion = self.opengl_conversion.to(device)
+        self.nvdiffrast_conversion = self.nvdiffrast_conversion.to(device)
+        self.up = self.up.to(device)
         device = self.device
         if device.type == "cuda":
             self.ctx = dr.RasterizeCudaContext()
         return self
 
-    def to_dict(self) -> dict[str, Any]:
-        return {**super().to_dict(), "V": self.V, "F": self.F, "texture": self.texture}
+    def _dict_data(self) -> dict[str, Any]:
+        return {
+            **super()._dict_data(),
+            "V": self.V,
+            "F": self.F,
+            "texture": self.texture,
+        }
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> Mesh:
+        return cls(V=data["V"], F=data["F"], texture=data["texture"])
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Mesh:
-        return cls(V=data["V"], F=data["F"], texture=data["texture"])
+        return Model.from_dict(data)
 
     def copy(self) -> Mesh:
         return self.__class__(

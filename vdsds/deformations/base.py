@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -8,6 +10,7 @@ from ..rasterizable import Rasterizable
 from ..representations.base import Model
 from ..utils.camera import Camera
 from ..utils.light import LightSource
+from ..utils.serialization import load_dict, save_dict, to_serializable
 
 
 class Deformation(nn.Module, Rasterizable):
@@ -23,26 +26,91 @@ class Deformation(nn.Module, Rasterizable):
     def dtype(self) -> torch.device:
         return next(self.parameters()).dtype
 
-    @classmethod
-    def from_state_dict(cls, state_dict: dict[str, Tensor]) -> Deformation:
-        model_keys = {}
-        direct_keys = {}
-        for key, value in state_dict.items():
-            if key.startswith("model."):
-                model_keys[key[6:]] = value
-            else:
-                direct_keys[key] = value
+    def _dict_data(self) -> dict[str, Any]:
+        """Raw (unserialized) dict representation of this deformation.
 
-        model_cls = cls._get_model_type()
-        model = model_cls.from_state_dict(model_keys)
-        return cls(model=model, **direct_keys)
+        The model is always saved under the nested "model" key, regardless of
+        whether it is trainable. Subclasses override this to add their own
+        persisted tensors/values; :meth:`to_dict` serializes the result
+        exactly once.
+
+        Returns:
+            out: Dict with the class name under "class" and the serialized
+                model under "model".
+        """
+        return {
+            "class": type(self).__name__,
+            "model": self.model.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializes the deformation into a nested dict.
+
+        Returns:
+            out: Dict as produced by :meth:`_dict_data`, with every tensor
+                cloned, detached and moved to cpu.
+        """
+        return to_serializable(self._dict_data())
+
+    def save(self, path) -> None:
+        """Saves the deformation to file using torch.save.
+
+        Args:
+            path: Destination file path.
+        """
+        save_dict(self.to_dict(), path)
 
     @classmethod
-    def _get_model_type(cls) -> type[Model]:
-        hints = cls.__init__.__annotations__
-        if "model" in hints:
-            return hints["model"]
-        raise ValueError(f"Cannot determine model type for {cls.__name__}")
+    def from_dict(cls, data: dict[str, Any]) -> Deformation:
+        """Reconstructs a deformation from a nested dict.
+
+        The concrete deformation class is read from the "class" entry, and the
+        model is reconstructed from its own nested dict.
+
+        Args:
+            data: Dict produced by :meth:`to_dict`.
+
+        Returns:
+            out: The reconstructed deformation.
+
+        Raises:
+            ValueError: If the dict contains no class information or the
+                recorded class is not a known Deformation subclass.
+        """
+        from . import DEFORMATION_REGISTRY
+
+        class_name = data.get("class")
+        if class_name is None:
+            raise ValueError("Cannot load deformation: dict has no 'class' entry.")
+        deform_cls = DEFORMATION_REGISTRY.get(class_name)
+        if deform_cls is None:
+            raise ValueError(f"Unknown deformation class '{class_name}'.")
+        return deform_cls._from_dict(data)
+
+    @classmethod
+    def load(cls, path) -> Deformation:
+        """Loads a deformation from file saved with :meth:`save`.
+
+        Args:
+            path: Source file path.
+
+        Returns:
+            out: The loaded deformation.
+        """
+        return cls.from_dict(load_dict(path))
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> Deformation:
+        """Constructs this specific class from its dict representation.
+
+        Args:
+            data: Dict produced by :meth:`to_dict`.
+
+        Returns:
+            out: The reconstructed instance.
+        """
+        model = Model.from_dict(data["model"])
+        return cls(model=model)
 
     def __len__(self) -> int:
         return len(self.model)
@@ -65,9 +133,10 @@ class Deformation(nn.Module, Rasterizable):
     def rasterize(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
         return self.deformed(camera).rasterize(camera, light)
 
-    def to(self, *args, **kwargs) -> Deformation:
-        super().to(*args, **kwargs)
-        self.model.to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> Deformation:
+        device = torch.device(device)
+        super().to(device)
+        self.model.to(device)
         return self
 
     def train(self, train_model: bool = False):

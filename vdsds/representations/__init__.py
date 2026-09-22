@@ -6,12 +6,18 @@ from .mesh import Mesh
 from .textured_mesh import TexturedMesh
 from .vertextured_mesh import VerTexturedMesh
 
+MODEL_REGISTRY: dict[str, type[Model]] = {
+    cls.__name__: cls for cls in (Mesh, TexturedMesh, VerTexturedMesh)
+}
+
 
 def get_model(path: str | Path, name: str = "textured_mesh", **kwargs) -> Model:
     if isinstance(path, str):
         path = Path(path)
     extension = path.suffix
-    if extension == ".obj":
+    if extension == ".m3d":
+        return Model.load(path)
+    elif extension == ".obj":
         data = load_obj(path)
     elif extension == ".glb":
         data = load_glb(path)

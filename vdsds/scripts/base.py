@@ -1,11 +1,12 @@
 import threading
 import traceback
+from pathlib import Path
 from typing import ClassVar
 
 import torch
 from PySide6.QtCore import QTimer
 
-from ..deformations import get_deformation
+from ..deformations import get_deformation, load_deformation
 from ..rasterizable import Rasterizable
 from ..representations import get_model
 from ..utils.config import Config
@@ -51,8 +52,10 @@ class Script:
 
     def load_model(self) -> Rasterizable:
         cfg = self.config
-        # ToDO: loading deformation case
-        model = get_model(cfg.path.model, **cfg.model)
+        path = Path(cfg.path.model)
+        if path.suffix == ".vd3d":
+            return load_deformation(path)
+        model = get_model(path, **cfg.model)
         if hasattr(cfg, "deformation"):
             model = get_deformation(model, **cfg.deformation)
         return model
@@ -82,7 +85,7 @@ class ViewableScript(Script):
             "model": {
                 "name": "textured_mesh",
             },
-            "paths": {"model": None},
+            "path": {"model": None},
         }
     )
 
@@ -120,15 +123,14 @@ class ViewableScript(Script):
 
     def _on_close(self):
         self._closed.set()
-        if self.config.window.finish_on_close:
-            self.finish()
 
     def launch(self) -> int:
         """
         Run the script, keeping the view (if any) alive alongside it.
 
         The Qt event loop drives the main thread while :meth:`run` executes in a
-        background thread.
+        background thread. ``finish`` is called exactly once, after ``run``
+        returns.
 
         - If ``close_on_finish`` is set, the view closes as soon as ``run``
           returns; otherwise it stays open until the user closes it.
@@ -137,7 +139,10 @@ class ViewableScript(Script):
           completion regardless of the window state.
         """
         if self.view is None:
-            self.run()
+            try:
+                self.run()
+            finally:
+                self.finish()
             return 0
         thread = threading.Thread(target=self._run_in_thread)
         thread.start()
@@ -162,9 +167,7 @@ class ViewableScript(Script):
             return
         # Keep the window open until the user closes it.
         self._closed.wait()
-        if not self.config.window.finish_on_close:
-            # Natural end: the script finished and closing is not what finishes it.
-            self.finish()
+        self.finish()
         QTimer.singleShot(0, self.view.close)
 
     def set_background(self, *args, **kwargs):

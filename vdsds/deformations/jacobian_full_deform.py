@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -27,10 +29,20 @@ class FullJacobianDeformation(Deformation):
         )
         self._cached = False
 
-    def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
-        self.poisson = self.poisson.to(*args, **kwargs)
+    def to(self, device: torch.device | str):
+        super().to(device)
+        self.poisson = self.poisson.to(device)
         return self
+
+    def _dict_data(self) -> dict[str, Any]:
+        return {**super()._dict_data(), "J_deform": self.J_deform}
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> FullJacobianDeformation:
+        model = Mesh.from_dict(data["model"])
+        instance = cls(model=model)
+        instance.J_deform = nn.Parameter(data["J_deform"])
+        return instance
 
     def cache_solver(self):
         self.J_src = self.poisson.jacobians_from_vertices(self.model.V[None])

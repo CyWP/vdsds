@@ -1252,18 +1252,15 @@ class Splimage:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
-    def to(self, *args, **kwargs) -> Splimage:
-        """Move/cast the underlying tensor. Returns a new Splimage.
-
-        Forwards all keyword arguments to ``Tensor.to`` (e.g. ``device``,
-        ``dtype``, ``non_blocking``, ``memory_format``).
+    def to(self, device: torch.device | str) -> Splimage:
+        """Move the underlying tensor to the given device. Returns a new Splimage.
 
         Returns:
             New Splimage with the converted tensor. Padding and
             ``_forced_alpha`` are preserved.
         """
         new = Splimage.__new__(Splimage)
-        new._tensor = self._tensor.to(*args, **kwargs)
+        new._tensor = self._tensor.to(device)
         new._padding = self._padding
         new._forced_alpha = self._forced_alpha
         new._is_mask = self._is_mask

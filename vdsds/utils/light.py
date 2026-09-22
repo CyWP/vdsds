@@ -32,9 +32,9 @@ class LightSource:
     def dtype(self) -> torch.dtype:
         return self.origin.dtype
 
-    def to(self, *args, **kwargs) -> LightSource:
-        self.origin = self.origin.to(*args, **kwargs)
-        self.strength = self.strength.to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> LightSource:
+        self.origin = self.origin.to(device)
+        self.strength = self.strength.to(device)
         return self
 
     def requires_grad_(self, mode: bool) -> LightSource:

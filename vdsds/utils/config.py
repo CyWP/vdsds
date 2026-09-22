@@ -203,7 +203,8 @@ class ConfigParser(argparse.ArgumentParser):
         self.add_argument(
             "--config",
             type=Path,
-            required=True,
+            required=False,
+            default=None,
             help="Path to a YAML or JSON configuration file.",
         )
 
@@ -213,8 +214,10 @@ class ConfigParser(argparse.ArgumentParser):
         namespace: argparse.Namespace | None = None,
     ) -> tuple[argparse.Namespace, Config]:
         args, unknown = self.parse_known_args(args, namespace)
-
-        config = Config.from_file(args.config)
+        if args.config is None:
+            config = Config({})
+        else:
+            config = Config.from_file(args.config)
         config.update(self._parse_overrides(unknown))
 
         return args, config

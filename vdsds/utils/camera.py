@@ -35,10 +35,10 @@ class CameraCoordinates:
     def dtype(self) -> torch.dtype:
         return self.Q.dtype
 
-    def to(self, *args, **kwargs) -> Camera:
-        self.origin = self.origin.to(*args, **kwargs)
-        self.Q = self.Q.to(*args, **kwargs)
-        self.up = self.up.to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> Camera:
+        self.origin = self.origin.to(device)
+        self.Q = self.Q.to(device)
+        self.up = self.up.to(device)
         return self
 
     def requires_grad_(self, mode: bool) -> Camera:
@@ -81,8 +81,8 @@ class Camera:
     def dtype(self) -> torch.dtype:
         return self.co.dtype
 
-    def to(self, *args, **kwargs) -> Camera:
-        self.co = self.co.to(*args, **kwargs)
+    def to(self, device: torch.device | str) -> Camera:
+        self.co = self.co.to(device)
         return self
 
     def requires_grad_(self, mode: bool):

@@ -8,6 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from ..utils.img import Splimage
+from .base import Model
 from .mesh import Mesh
 
 
@@ -22,8 +23,12 @@ class VerTexturedMesh(Mesh):
         super().__init__(V, F, texture=texture)
 
     @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> VerTexturedMesh:
+        return cls(V=data["V"], F=data["F"], texture=data["texture"])
+
+    @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VerTexturedMesh:
-        return cls(V=data["V"], F=data["F"], tetxure=data["texture"])
+        return Model.from_dict(data)
 
     def raster_albedo(self, rast) -> Float[Tensor, "B H W 3"]:
         return dr.interpolate(self.texture, rast, self.F)[0]

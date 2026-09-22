@@ -1,5 +1,6 @@
 import logging
 import math
+from pathlib import Path
 from typing import ClassVar
 
 import torch
@@ -7,6 +8,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..utils.camera import Camera
+from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
@@ -17,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 class TrainModelSDS(ViewableScript):
     _default_config_overrides: ClassVar[dict[str, any]] = {
+        "window": {"fps": 12},
+        "path": {
+            "run_dir": None,
+        },
         "optim": {
             "epochs": 400,
             "lr": 0.0075,
@@ -81,6 +87,8 @@ class TrainModelSDS(ViewableScript):
             lr=config.optim.lr,
         )
         for e in range(config.optim.epochs):
+            if self.abort_requested():
+                break
             epoch_loss = 0.0
             optimizer.zero_grad()
             cameras = [
@@ -107,12 +115,33 @@ class TrainModelSDS(ViewableScript):
             l_loss = self.laplacian_loss(ref_L) * config.loss.laplacian * accum_steps
             (j_loss + l_loss).backward()
             optimizer.step()
-            print(
-                f"[Epoch {e}]\nReconstruction Loss: {epoch_loss},\nJacobian loss: {j_loss.item()},\nLaplacian loss: {l_loss.item()}"
+            self.log(
+                e,
+                {
+                    "reconstruction_loss": epoch_loss,
+                    "jacobian_loss": j_loss.item(),
+                    "laplacian_loss": l_loss.item(),
+                },
             )
 
+    def log(self, epoch: int, data: dict[str, any]):
+        if not hasattr(self, "_logs"):
+            self._logs = {}
+        self._logs[str(epoch)] = data
+        printlog = f"[Epoch {epoch}]:\n"
+        for k, v in data.items():
+            printlog += f"\t{k}: {v}\n"
+        print(printlog)
+
     def finish(self):
-        pass
+        run_dir = Path(self.config.path.run_dir)
+        run_dir.mkdir(exist_ok=True, parents=True)
+        deformation_file = run_dir / "deformation.vd3d"
+        logs_file = run_dir / "logs.yaml"
+        config_file = run_dir / "config.yaml"
+        self.config.save(config_file)
+        Config(self._logs).save(logs_file)
+        self.model.save(deformation_file)
 
     def jacobian_loss(self) -> torch.Tensor:
         return (self.model.J_deform.weights**2).mean()

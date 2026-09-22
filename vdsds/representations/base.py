@@ -8,6 +8,7 @@ from torch import Tensor
 
 from ..utils.camera import Camera
 from ..utils.light import LightSource
+from ..utils.serialization import load_dict, save_dict, to_serializable
 
 
 class Model:
@@ -32,10 +33,11 @@ class Model:
     def _tensors(self) -> dict[str, Tensor]:
         raise NotImplementedError
 
-    def to(self, *args, **kwargs) -> Model:
+    def to(self, device: torch.device | str) -> Model:
+        device = torch.device(device)
         mapped = {}
         for k, v in self._tensors().items():
-            mapped[k] = v.to(*args, **kwargs)
+            mapped[k] = v.to(device)
         self._apply_tensors(mapped)
         return self
 
@@ -50,14 +52,96 @@ class Model:
     def parameters(self) -> list[Tensor]:
         return [v for v in self._tensors().values() if v.is_floating_point()]
 
+    def _dict_data(self) -> dict[str, Any]:
+        """Raw (unserialized) dict representation of this model.
+
+        Subclasses override this to add/replace entries; :meth:`to_dict`
+        serializes the result exactly once.
+
+        Returns:
+            out: Dict with the class name under "class" and every persisted
+                tensor/value under its attribute name.
+        """
+        data: dict[str, Any] = {"class": type(self).__name__}
+        for key, value in self._tensors().items():
+            if key in data:
+                continue
+            data[key] = value
+        return data
+
     def to_dict(self) -> dict[str, Any]:
-        return {"class": type(self).__name__}
+        """Serializes the model into a nested dict.
+
+        Returns:
+            out: Dict as produced by :meth:`_dict_data`, with every tensor
+                cloned, detached and moved to cpu.
+        """
+        return to_serializable(self._dict_data())
+
+    def save(self, path) -> None:
+        """Saves the model to file using torch.save.
+
+        Args:
+            path: Destination file path.
+        """
+        save_dict(self.to_dict(), path)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Tensor]) -> Model:
+    def from_dict(cls, data: dict[str, Any]) -> Model:
+        """Reconstructs a model from a nested dict.
+
+        The concrete model class is read from the "class" entry, so the
+        returned instance may be a subclass of ``cls``.
+
+        Args:
+            data: Dict produced by :meth:`to_dict`.
+
+        Returns:
+            out: The reconstructed model.
+
+        Raises:
+            ValueError: If the dict contains no class information or the
+                recorded class is not a registered Model subclass.
+        """
+        from . import MODEL_REGISTRY
+
+        class_name = data.get("class")
+        if class_name is None:
+            raise ValueError("Cannot load model: dict has no 'class' entry.")
+        model_cls = MODEL_REGISTRY.get(class_name)
+        if model_cls is None:
+            raise ValueError(f"Unknown model class '{class_name}'.")
+        return model_cls._from_dict(data)
+
+    @classmethod
+    def load(cls, path) -> Model:
+        """Loads a model from file saved with :meth:`save`.
+
+        Args:
+            path: Source file path.
+
+        Returns:
+            out: The loaded model.
+        """
+        return cls.from_dict(load_dict(path))
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> Model:
+        """Constructs this specific class from its dict representation.
+
+        Subclasses with extra constructor arguments override this method.
+
+        Args:
+            data: Dict produced by :meth:`to_dict` (without the "class"
+                entry processed).
+
+        Returns:
+            out: The reconstructed instance.
+        """
         raise NotImplementedError
 
-    def combine(self, models: list[Model]) -> Model:
+    @classmethod
+    def combine(cls, models: list[Model]) -> Model:
         raise NotImplementedError()
 
     def __len__(self) -> int:
