@@ -20,12 +20,18 @@ class VDRestrainedJacobianDeformation(Deformation):
         num_funcs: int = 8,
         centroid_init: str = "fibonacci",
         overlap: float = 2.0,
+        normalize: bool = True,
         **kwargs,
     ):
         super().__init__(model)
         self.poisson = PoissonSystem.from_mesh(model.V, model.F)
         self.J_deform = SphericalGaussianBasis(
-            num_funcs, 6, model.num_F, init=centroid_init, sigma_overlap=overlap
+            num_funcs,
+            6,
+            model.num_F,
+            init=centroid_init,
+            sigma_overlap=overlap,
+            normalize=normalize,
         )
         self._cached = False
 

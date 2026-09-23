@@ -47,6 +47,7 @@ class TrainModelSDS(ViewableScript):
             "num_funcs": 6,
             "init": "fibonacci",  # Options: 'fibonacci', 'random'
             "overlap": 2.0,
+            "normalize": True,
         },
         "camera": {
             "views": 16,

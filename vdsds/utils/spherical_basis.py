@@ -39,6 +39,10 @@ class SphericalGaussianBasis(nn.Module):
           radian parametrization:
           ``sigma_r = sqrt(2 * sigma_overlap / num_funcs)``, i.e.
           ``N * 2 * pi * sigma_r^2 = 4 * pi * sigma_overlap``.
+        - With ``normalize=True`` the per-function influence is rescaled at
+          every query point so the basis values sum to 1 (partition of
+          unity): evaluation becomes a true weighted average of the
+          weights, so equal weights yield a constant output field.
     """
 
     def __init__(
@@ -51,6 +55,7 @@ class SphericalGaussianBasis(nn.Module):
         centroids: Float[Tensor, "B N 3"] | None = None,
         init: str = "fibonacci",
         sigma_overlap: float = 2.0,
+        normalize: bool = False,
     ):
         """
         Args:
@@ -66,11 +71,15 @@ class SphericalGaussianBasis(nn.Module):
                 the total gaussian mass (see the class Notes for the exact
                 relation to dot-space widths). Only used when `log_sigmas`
                 is not provided.
+            normalize: If True, rescale the per-function influence at every
+                query point so the basis values sum to 1 (partition of
+                unity / weighted-average interpolation).
         """
         super().__init__()
         self.num_funcs = num_funcs
         self.num_dims = num_dims
         self.batch_size = batch_size
+        self.normalize = normalize
 
         if centroids is not None:
             assert centroids.shape == (batch_size, num_funcs, 3)
@@ -115,12 +124,16 @@ class SphericalGaussianBasis(nn.Module):
         raise ValueError(f"Unknown init: {init}")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Tensor]) -> SphericalGaussianBasis:
+    def from_dict(
+        cls, data: dict[str, Tensor], normalize: bool = False
+    ) -> SphericalGaussianBasis:
         """Reconstruct an instance from its dict representation.
 
         Args:
             data: Dict with "weights" and optionally "log_sigmas"/"centroids",
                 as produced by :meth:`to_dict`.
+            normalize: Whether to rescale the basis to a partition of unity
+                at every query point (configuration, not part of `to_dict`).
 
         Note:
             Checkpoints in the old format (2D polar "centroids" and
@@ -138,6 +151,7 @@ class SphericalGaussianBasis(nn.Module):
             weights=weights,
             log_sigmas=data.get("log_sigmas"),
             centroids=data.get("centroids"),
+            normalize=normalize,
         )
 
     def to_dict(self) -> dict[str, Tensor]:
@@ -168,6 +182,7 @@ class SphericalGaussianBasis(nn.Module):
             weights=self.weights.clone(),
             log_sigmas=self.log_sigmas.clone(),
             centroids=self.centroids.clone(),
+            normalize=self.normalize,
         )
 
     def smoothness_loss(self) -> Float[Tensor, ""]:
@@ -234,6 +249,11 @@ class SphericalGaussianBasis(nn.Module):
             torch.finfo(u.dtype).tiny
         )  # (B, 1, N)
         basis = torch.exp(-g * inv)  # (B, M, N)
+        if self.normalize:
+            # Rescale to a partition of unity per query point. The clamp
+            # guards against all-underflow (tiny widths, antipodal queries):
+            # the row stays 0 and the output falls back to 0, not NaN.
+            basis = basis / basis.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         out = basis @ self.weights  # (B, M, N) @ (B, N, D) -> (B, M, D)
         return out
 
@@ -260,10 +280,8 @@ class SphericalGaussianBasis(nn.Module):
             f"Expected batch {self.batch_size}, got {theta.shape[0]}"
         )
 
-        th = theta.unsqueeze(-1)  # (B, M, 1)
-        ph = phi.unsqueeze(-1)  # (B, M, 1)
         u = torch.stack(
-            (th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()), dim=-1
+            (theta.sin() * phi.cos(), theta.sin() * phi.sin(), theta.cos()), dim=-1
         )  # (B, M, 3)
         return self._from_unit_directions(u)
 
