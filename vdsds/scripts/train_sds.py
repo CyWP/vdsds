@@ -47,8 +47,8 @@ class TrainModelSDS(ViewableScript):
         "model": {"name": "mesh"},
         "deformation": {
             "name": "vd_restrained",  # Options: 'full', 'vd_full', 'vd_restrained'
-            "num_funcs": 6,
-            "init": "fibonacci",  # Options: 'fibonacci', 'random'
+            "num_funcs": 8,
+            "init": "random",  # Options: 'fibonacci', 'random'
             "overlap": 2.0,
             "normalize": False,
         },
@@ -57,6 +57,8 @@ class TrainModelSDS(ViewableScript):
             "point_upwards": True,
             "radius": 1.5,
             "bg_color": [0.1, 0.7, 0.0],  # Options: 'random' or provide color.
+            "jitters": 3,
+            "jitter_sigma": math.pi / 10,
         },
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
@@ -77,6 +79,10 @@ class TrainModelSDS(ViewableScript):
         self.model.train(train_model=False)
         ref_L = self.model.model.L_cotan
         txt = config.diffusion.prompt
+        n_views = config.camera.views
+        cams_per_view = 1 + config.camera.jitters
+        accum_steps = config.optim.accum_steps
+        n_samples = n_views * accum_steps
         if isinstance(txt, list):
             prompts = [
                 p + ", a 3d rendering" if i != len(txt) - 1 else p
@@ -85,12 +91,9 @@ class TrainModelSDS(ViewableScript):
         else:
             prompts = [txt + ", a 3d rendering"]
         print("Target text prompt:", txt)
-        text_embeds = df.encode_text_2(prompts, negative_prompt=[""], batch_size=1).to(
-            device
-        )
-        n_views = config.camera.views
-        accum_steps = config.optim.accum_steps
-        n_samples = n_views * accum_steps
+        text_embeds = df.encode_text_2(
+            prompts, negative_prompt=[""] * cams_per_view, batch_size=cams_per_view
+        ).to(device)
         optimizer = torch.optim.Adam(
             [*self.model.parameters()],
             lr=config.optim.lr,
@@ -103,7 +106,7 @@ class TrainModelSDS(ViewableScript):
             cameras = self.camera_batch()
             for _ in range(config.optim.accum_steps):
                 for i, cam in enumerate(cameras):
-                    tgt_render = self.get_renders([cam], bg=self.get_bg_color())
+                    tgt_render = self.get_training_renders([cam])
                     # Splimage(tgt_render.clone().detach()).save(path / f"{i:03}.png")
                     loss = (
                         df.SDS(tgt_render, text_embeds, controller=None)["loss_sds"]
@@ -163,7 +166,7 @@ class TrainModelSDS(ViewableScript):
             batch_dir.mkdir(exist_ok=True, parents=True)
             for b in range(bv):
                 renders = Splimage(
-                    self.get_renders(self.camera_batch(), bg=self.get_bg_color())
+                    self.get_training_renders(self.camera_batch())
                 ).to_pil()
                 if not isinstance(renders, list):
                     renders = [renders]
@@ -226,12 +229,37 @@ class TrainModelSDS(ViewableScript):
                 f"Alignment '{align}' is invalid for lighting alignment config."
             )
         if jitter != 0.0:
-            axis = torch.rand((3,), device=device)
-            axis /= axis.norm()
+            axis = torch.rand((3,), device=device) - 0.5
             angle = torch.randn((), device=device) * jitter
             Q_rot = Quaternion.from_axis_angle(axis, angle)
             origin = Q_rot.rotate_vector(origin)
         return LightSource(origin=origin)
+
+    def get_training_renders(self, cameras: list[Camera]) -> Float[Tensor, "B 3 H W"]:
+        cfg = self.config
+        jitters = cfg.camera.jitters
+        jitter_sigma = cfg.camera.jitter_sigma
+        pu = cfg.camera.point_upwards
+        renders = []
+        for cam in cameras:
+            pairs = [(cam, cam)]
+            for _ in range(jitters):
+                j_cam = cam.copy()
+                j_cam.co.Q = j_cam.co.Q * Quaternion.from_axis_angle(
+                    torch.rand((3,), device=cam.device) - 0.5,
+                    torch.randn((), device=cam.device) * jitter_sigma,
+                )
+                # if pu:
+                #     j_cam = j_cam.point_upwards()
+                pairs.append((j_cam, cam))
+            for i, (render_cam, deform_cam) in enumerate(pairs):
+                light = self.randomized_light(render_cam)
+                if i > 0:
+                    light.origin *= -1  # I have no clue why the fuck this is necessary
+                render = self.model.deformed(deform_cam).rasterize(render_cam, light)
+                renders.append(render)
+        renders = torch.cat(renders, dim=0)
+        return self.apply_bg(renders, bg=self.get_bg_color())
 
     def get_renders(
         self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None

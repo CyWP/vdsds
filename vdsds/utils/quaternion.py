@@ -39,7 +39,7 @@ class Quaternion:
     def from_axis_angle(
         cls, axis: Float[Tensor, 3], angle: Float[Tensor, ""]
     ) -> Quaternion:
-        axis = axis / axis.norm()
+        axis = axis / axis.norm().clamp(min=1e-8)
         half = angle * 0.5
         w = torch.cos(half)
         xyz = axis * torch.sin(half)

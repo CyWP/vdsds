@@ -1,0 +1,11 @@
+camera:
+  jitters: 0
+post:
+  analyze: False
+deformation:
+  name: full
+loss:
+  jacobian: 100.0
+  laplacian: 1000.0
+optim:
+  lr: 0.01

@@ -50,7 +50,9 @@ class CameraCoordinates:
         """
         Return a copy of the object.
         """
-        return CameraCoordinates(self.origin.clone(), self.Q.clone(), self.radius)
+        return CameraCoordinates(
+            origin=self.origin.clone(), Q=self.Q.clone(), radius=self.radius
+        )
 
 
 class Camera:
@@ -273,6 +275,33 @@ class Camera:
     def clone(self) -> Camera:
         return self.copy()
 
+    def point_upwards(self) -> Camera:
+        Q = self.co.Q
+        R = Q.R()
+        forward = R[2, :]
+        up = -R[1, :]
+        world_up = CameraCoordinates._up.to(Q.device)
+
+        # Project both axes onto the plane orthogonal to the forward axis.
+        up_perp = up - (up @ forward) * forward
+        w_perp = world_up - (world_up @ forward) * forward
+
+        # If forward is (anti)parallel to the world up, no roll can help.
+        if w_perp.norm() > 1e-8:
+            angle = torch.atan2(
+                torch.linalg.cross(up_perp, w_perp) @ forward,
+                up_perp @ w_perp,
+            )
+            Q = Q * Quaternion.from_axis_angle(forward, -angle)
+        return Camera(
+            H=self.H,
+            W=self.W,
+            F=self.F,
+            Zn=self.Zn,
+            Zf=self.Zf,
+            co=CameraCoordinates(origin=self.co.origin, Q=Q, radius=self.co.radius),
+        )
+
     @staticmethod
     def random_rot(
         H: int = 512,
@@ -283,23 +312,6 @@ class Camera:
         point_upwards: bool = False,
     ) -> Camera:
         Q = Quaternion.random()
-        if point_upwards:
-            R = Q.R()
-            forward = R[2, :]
-            up = -R[1, :]
-            world_up = CameraCoordinates._up
-
-            # Project both axes onto the plane orthogonal to the forward axis.
-            up_perp = up - (up @ forward) * forward
-            w_perp = world_up - (world_up @ forward) * forward
-
-            # If forward is (anti)parallel to the world up, no roll can help.
-            if w_perp.norm() > 1e-8:
-                angle = torch.atan2(
-                    torch.linalg.cross(up_perp, w_perp) @ forward,
-                    up_perp @ w_perp,
-                )
-                Q *= Quaternion.from_axis_angle(forward, -angle)
         if origin is None:
             origin = torch.tensor([0.0, 0.0, 0.0])
         cam = Camera(
@@ -307,6 +319,8 @@ class Camera:
             W=W,
             co=CameraCoordinates(origin=origin, Q=Q, radius=radius),
         )
+        if point_upwards:
+            cam = cam.point_upwards()
         if require_grad:
             cam.requires_grad_(require_grad)
         return cam
