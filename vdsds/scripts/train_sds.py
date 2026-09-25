@@ -166,9 +166,7 @@ class TrainModelSDS(ViewableScript):
         jitter = self.config.lighting.jitter_sigma
         device = camera.device
         if align == "camera":
-            origin = camera.location[[0, 2, 1]] * torch.tensor(
-                [-1.0, -1.0, 1.0], device=device
-            )
+            origin = LightSource.from_camera(camera).origin
         elif align == "up":
             origin = torch.tensor(LightSource._up, device=device, dtype=torch.float32)
         else:

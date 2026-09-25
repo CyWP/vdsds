@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import exp, radians, tan
+from typing import ClassVar
 
 import torch
 from jaxtyping import Float
@@ -16,6 +17,8 @@ class CameraCoordinates:
     Holds camera coordinates.
     """
 
+    _up: ClassVar[Float[Tensor, "3"]] = torch.tensor(UP)
+
     def __init__(
         self,
         origin: torch.Tensor = None,
@@ -25,7 +28,6 @@ class CameraCoordinates:
         self.origin = torch.tensor([0.0, 0.0, 0.0]) if origin is None else origin
         self.radius: float = radius
         self.Q = Quaternion.identity() if Q is None else Q
-        self.up = torch.tensor(UP)
 
     @property
     def device(self) -> torch.device:
@@ -38,7 +40,6 @@ class CameraCoordinates:
     def to(self, device: torch.device | str) -> Camera:
         self.origin = self.origin.to(device)
         self.Q = self.Q.to(device)
-        self.up = self.up.to(device)
         return self
 
     def requires_grad_(self, mode: bool) -> Camera:
@@ -286,7 +287,7 @@ class Camera:
             R = Q.R()
             forward = R[2, :]
             up = -R[1, :]
-            world_up = torch.tensor(UP)
+            world_up = CameraCoordinates._up
 
             # Project both axes onto the plane orthogonal to the forward axis.
             up_perp = up - (up @ forward) * forward
