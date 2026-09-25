@@ -1,10 +1,11 @@
 import torch
 
 from ..utils.config import Config
+from .analyze import AnalyzeDeformation
 from .base import Script
+from .orbit import OrbitFrames
 from .train_sds import TrainModelSDS
 from .view_model import ViewModel
-from .orbit import OrbitFrames
 
 
 def get_script(name: str, device: torch.device, config: Config, **kwargs) -> Script:
@@ -14,6 +15,8 @@ def get_script(name: str, device: torch.device, config: Config, **kwargs) -> Scr
         return TrainModelSDS(device, config, **kwargs)
     elif name == "orbit":
         return OrbitFrames(device, config, **kwargs)
+    elif name == "analyze":
+        return AnalyzeDeformation(device, config, **kwargs)
     else:
         raise ValueError(f"Task '{name}' is unrecognized.")
 

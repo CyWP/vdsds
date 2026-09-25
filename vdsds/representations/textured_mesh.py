@@ -47,14 +47,6 @@ class TexturedMesh(Mesh):
     def from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
         return Model.from_dict(data)
 
-    def copy(self) -> TexturedMesh:
-        return TexturedMesh(
-            V=self.V.clone(),
-            F=self.F.clone(),
-            uv_co=self.uv_co.clone(),
-            texture=self.texture.copy(),
-        )
-
     def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
         uv_img, _ = dr.interpolate(self.uv_co[None], rast, self.F)
         return dr.texture(

@@ -1,4 +1,3 @@
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -12,6 +11,7 @@ from ..utils.config import Config
 from ..utils.img import Splimage
 from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
+from ..utils.video import write_video
 from .base import ViewableScript
 
 
@@ -32,7 +32,7 @@ class OrbitFrames(ViewableScript):
             "path": {
                 "model": None,
                 "out_dir": "./recordings",
-                "prefix": "frame",
+                "file_name": "orbit",
             },
             "camera": {
                 "H": 1024,
@@ -46,34 +46,38 @@ class OrbitFrames(ViewableScript):
             },
             "rotation": {
                 "mode": "both",  # Options: 'horizontal', 'vertical', 'both'.
-                "frames": 180,
+                "frames": 240,
             },
         }
     )
 
     def run(self):
+        cfg = self.config
+        out_dir = Path(cfg.path.out_dir)
+        out_dir.mkdir(exist_ok=True, parents=True)
+        video_path = out_dir / f"{cfg.path.file_name}.mp4"
+        write_video(self.orbit_all(), path=video_path)
+        print(f"Orbit video saved in {video_path}.")
+
+    def orbit_all(self) -> Iterator[Splimage]:
         device = self.device
         cfg = self.config
         mode = cfg.rotation.mode
         if mode not in ("horizontal", "vertical", "both"):
             raise ValueError(f"Invalid orbit mode: '{mode}'.")
-        out_dir = Path(cfg.path.out_dir) / time.strftime(
-            "%Y%m%d_%H%M%S", time.localtime()
-        )
-        out_dir.mkdir(exist_ok=True, parents=True)
-        prefix = cfg.path.prefix
         rot_frames = cfg.rotation.frames
         camera = self.get_camera().to(device)
         frame_add = 0
         axis = CameraCoordinates._up.to(device)
         if mode in ("horizontal", "both"):
-            for i, frame in enumerate(self.orbit_frames(camera, axis, rot_frames)):
-                frame.save(out_dir / f"{prefix}_{(i + frame_add):06}.png")
+            for frame in self.orbit_frames(camera, axis, rot_frames):
+                yield frame
             frame_add += rot_frames
         if mode in ("vertical", "both"):
             axis = axis[[2, 0, 1]]
-            for i, frame in enumerate(self.orbit_frames(camera, axis, rot_frames)):
-                frame.save(out_dir / f"{prefix}_{(i + frame_add):06}.png")
+            for frame in self.orbit_frames(camera, axis, rot_frames):
+                yield frame
+        return
 
     def orbit_frames(
         self, camera: Camera, axis: Float[Tensor, "3"], frames: int

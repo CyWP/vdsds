@@ -99,11 +99,6 @@ class Mesh(Model):
     def from_dict(cls, data: dict[str, Any]) -> Mesh:
         return Model.from_dict(data)
 
-    def copy(self) -> Mesh:
-        return self.__class__(
-            V=self.V.clone(), F=self.F.clone(), texture=self.texture.clone()
-        )
-
     def __len__(self) -> int:
         return self.num_V
 

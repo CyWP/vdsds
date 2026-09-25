@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from ..utils.loading import load_glb, load_obj
 from .base import Model
@@ -11,18 +12,25 @@ MODEL_REGISTRY: dict[str, type[Model]] = {
 }
 
 
-def get_model(path: str | Path, name: str = "textured_mesh", **kwargs) -> Model:
-    if isinstance(path, str):
-        path = Path(path)
-    extension = path.suffix
-    if extension == ".m3d":
-        return Model.load(path)
-    elif extension == ".obj":
-        data = load_obj(path)
-    elif extension == ".glb":
-        data = load_glb(path)
+def get_model(
+    path: str | Path | dict[str, Any], name: str = "textured_mesh", **kwargs
+) -> Model:
+    if isinstance(path, dict):
+        if "class" in path:
+            return Model.from_dict(path)
+        data = path
     else:
-        raise ValueError(f"File path '{path}' is an invalid format.")
+        if isinstance(path, str):
+            path = Path(path)
+        extension = path.suffix
+        if extension == ".m3d":
+            return Model.load(path)
+        elif extension == ".obj":
+            data = load_obj(path)
+        elif extension == ".glb":
+            data = load_glb(path)
+        else:
+            raise ValueError(f"File path '{path}' is an invalid format.")
     if name == "mesh":
         return Mesh.from_mesh_data(**data, **kwargs)
     elif name == "textured_mesh":

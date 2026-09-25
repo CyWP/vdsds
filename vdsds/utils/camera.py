@@ -17,7 +17,7 @@ class CameraCoordinates:
     Holds camera coordinates.
     """
 
-    _up: ClassVar[Float[Tensor, "3"]] = torch.tensor(UP)
+    _up: ClassVar[Float[Tensor, 3]] = torch.tensor(UP)
 
     def __init__(
         self,

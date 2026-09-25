@@ -10,9 +10,12 @@ from torch import Tensor
 from ..utils.camera import Camera
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
+from ..utils.img import Splimage
 from ..utils.light import LightSource
 from ..utils.quaternion import Quaternion
+from .analyze import AnalyzeDeformation
 from .base import ViewableScript
+from .orbit import OrbitFrames
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +28,7 @@ class TrainModelSDS(ViewableScript):
         },
         "optim": {
             "epochs": 400,
-            "lr": 0.0025,
+            "lr": 0.005,
             "accum_steps": 2,
             "seed": 42,
         },
@@ -47,7 +50,7 @@ class TrainModelSDS(ViewableScript):
             "num_funcs": 6,
             "init": "fibonacci",  # Options: 'fibonacci', 'random'
             "overlap": 2.0,
-            "normalize": True,
+            "normalize": False,
         },
         "camera": {
             "views": 16,
@@ -58,6 +61,11 @@ class TrainModelSDS(ViewableScript):
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
             "jitter_sigma": math.pi / 10,
+        },
+        "post": {
+            "orbit": True,
+            "check_batch_views": 2,
+            "analyze": True,
         },
     }
 
@@ -92,15 +100,7 @@ class TrainModelSDS(ViewableScript):
                 break
             epoch_loss = 0.0
             optimizer.zero_grad()
-            cameras = [
-                Camera.random_rot(
-                    H=224,
-                    W=224,
-                    radius=config.camera.radius,
-                    point_upwards=config.camera.point_upwards,
-                ).to(self.device)
-                for _ in range(n_views)
-            ]
+            cameras = self.camera_batch()
             for _ in range(config.optim.accum_steps):
                 for i, cam in enumerate(cameras):
                     tgt_render = self.get_renders([cam], bg=self.get_bg_color())
@@ -125,6 +125,18 @@ class TrainModelSDS(ViewableScript):
                 },
             )
 
+    def camera_batch(self) -> list[Camera]:
+        config = self.config
+        return [
+            Camera.random_rot(
+                H=224,
+                W=224,
+                radius=config.camera.radius,
+                point_upwards=config.camera.point_upwards,
+            ).to(self.device)
+            for _ in range(config.camera.views)
+        ]
+
     def log(self, epoch: int, data: dict[str, any]):
         if not hasattr(self, "_logs"):
             self._logs = {}
@@ -135,14 +147,54 @@ class TrainModelSDS(ViewableScript):
         print(printlog)
 
     def finish(self):
-        run_dir = Path(self.config.path.run_dir)
+        cfg = self.config
+        run_dir = Path(cfg.path.run_dir)
         run_dir.mkdir(exist_ok=True, parents=True)
         deformation_file = run_dir / "deformation.vd3d"
         logs_file = run_dir / "logs.yaml"
         config_file = run_dir / "config.yaml"
-        self.config.save(config_file)
+        cfg.save(config_file)
         Config(self._logs).save(logs_file)
         self.model.save(deformation_file)
+        bv = cfg.post.check_batch_views
+        if bv > 0:
+            print("Saving sample batch renders...")
+            batch_dir = run_dir / "batch_test"
+            batch_dir.mkdir(exist_ok=True, parents=True)
+            for b in range(bv):
+                renders = Splimage(
+                    self.get_renders(self.camera_batch(), bg=self.get_bg_color())
+                ).to_pil()
+                if not isinstance(renders, list):
+                    renders = [renders]
+                for i, r in enumerate(renders):
+                    Splimage(r).save(batch_dir / f"batch_{(i + b * bv):05}.png")
+
+        if cfg.post.orbit:
+            print("Generating orbit video...")
+            orbit_cfg = {
+                "model": cfg.model,
+                "path": {
+                    "model": deformation_file,
+                    "out_dir": run_dir,
+                    "file_name": "orbit",
+                },
+            }
+            orbit_script = OrbitFrames(self.device, config=Config(orbit_cfg))
+            orbit_script.run()
+            orbit_script.finish()
+        if cfg.post.analyze:
+            print("Analyzing deformation...")
+            analyze_cfg = {
+                "model": cfg.model,
+                "path": {
+                    "model": deformation_file,
+                    "out_dir": run_dir,
+                },
+            }
+            analyze_script = AnalyzeDeformation(self.device, config=Config(analyze_cfg))
+            analyze_script.run()
+            analyze_script.finish()
 
     def jacobian_loss(self) -> torch.Tensor:
         J_def = self.model.J_deform

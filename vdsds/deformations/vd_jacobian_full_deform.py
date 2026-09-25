@@ -6,6 +6,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
+from ..representations import get_model
 from ..representations.mesh import Mesh
 from ..utils.camera import Camera
 from ..utils.poisson_system import PoissonSystem
@@ -49,7 +50,7 @@ class VDFullJacobianDeformation(Deformation):
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> VDFullJacobianDeformation:
-        model = Mesh.from_dict(data["model"])
+        model = get_model(data["model"])
         instance = cls(model=model, num_funcs=data["num_funcs"])
         instance.J_deform = SphericalGaussianBasis.from_dict(data["J_deform"])
         return instance
@@ -90,4 +91,6 @@ class VDFullJacobianDeformation(Deformation):
             "bfij,bfjk->bfik", self.jacobians_3d(delta), self.J_src
         )
         V_new = self.poisson.solve_poisson(J_transformed)[0]
-        return Mesh(V=V_new, F=m.F)
+        out = m.copy()
+        out.V = V_new.contiguous()
+        return out

@@ -6,6 +6,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor, nn
 
+from ..representations import get_model
 from ..representations.mesh import Mesh
 from ..utils.camera import Camera
 from ..utils.poisson_system import PoissonSystem
@@ -40,7 +41,7 @@ class FullJacobianDeformation(Deformation):
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> FullJacobianDeformation:
-        model = Mesh.from_dict(data["model"])
+        model = get_model(data["model"])
         instance = cls(model=model)
         instance.J_deform = nn.Parameter(data["J_deform"])
         return instance
@@ -72,6 +73,9 @@ class FullJacobianDeformation(Deformation):
         """
         if not self._cached:
             self.cache_solver()
-        J_transformed = torch.einsum("bfij,bfjk->bfik", self.jacobians_3d(), self.J_src)
-        V_new = self.poisson.solve_poisson(J_transformed)[0]
-        return Mesh(V=V_new, F=self.model.F)
+        J_transformed = torch.einsum(
+            "bfij,bfjk->bfik", self.jacobians_3d(), self.J_src
+        )
+        out = self.model.copy()
+        out.V = self.poisson.solve_poisson(J_transformed)[0].contiguous()
+        return out

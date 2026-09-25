@@ -140,6 +140,28 @@ class Model:
         """
         raise NotImplementedError
 
+    def copy(self, deep: bool = False) -> Model:
+        """Copies this model without re-running its constructor.
+
+        By default the copy shares every tensor attribute with the original
+        (shallow copy), preserving device, grad tracking and any autograd
+        graph exactly as-is. With ``deep=True`` every tensor attribute is
+        cloned instead; clones remain connected to the original tensors, so
+        gradients still flow back to them.
+
+        Args:
+            deep: Whether to clone tensor attributes.
+
+        Returns:
+            out: The copy.
+        """
+        new = object.__new__(type(self))
+        for key, value in self.__dict__.items():
+            if deep and isinstance(value, Tensor):
+                value = value.clone()
+            new.__dict__[key] = value
+        return new
+
     @classmethod
     def combine(cls, models: list[Model]) -> Model:
         raise NotImplementedError()
