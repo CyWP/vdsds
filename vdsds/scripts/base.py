@@ -101,11 +101,6 @@ class ViewableScript(Script):
         self._closed = threading.Event()
         if cfg.window.view:
             self.view = View(self.model, fps=cfg.window.fps, on_close=self._on_close)
-            self.set_background(
-                torch.tensor(
-                    cfg.window.bg_color, device=self.device, dtype=torch.float32
-                )
-            )
         else:
             self.view = None
 
@@ -169,9 +164,6 @@ class ViewableScript(Script):
         self._closed.wait()
         self.finish()
         QTimer.singleShot(0, self.view.close)
-
-    def set_background(self, *args, **kwargs):
-        self.view.viewer.set_background(*args, **kwargs)
 
     def run(self):
         raise NotImplementedError

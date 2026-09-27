@@ -6,8 +6,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication
 
 from ..rasterizable import Rasterizable
-from ..utils.camera import Camera
-from ..utils.light import LightSource
+from ..rendering.camera import Camera
+from ..rendering.light import LightSource
 from ..utils.timer import TimedJob
 from .keymap import KeyHandler
 from .obj_view import ObjViewer

@@ -9,8 +9,8 @@ from torch import Tensor, nn
 from ..rasterizable import Rasterizable
 from ..representations import get_model
 from ..representations.base import Model
-from ..utils.camera import Camera
-from ..utils.light import LightSource
+from ..rendering.camera import Camera
+from ..rendering.light import LightSource
 from ..utils.serialization import load_dict, save_dict, to_serializable
 
 

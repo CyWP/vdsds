@@ -7,10 +7,9 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..deformations.base import Deformation
+from ..rendering import Renderer, Camera, LightSource
 from ..representations.base import Model
-from ..utils.camera import Camera
 from ..utils.img import ImgUtils, Splimage
-from ..utils.light import LightSource
 from .keymap import K_CTRL, K_SHIFT
 
 
@@ -21,6 +20,7 @@ class ObjViewer:
         camera: Camera | None = None,
         light: LightSource | None = None,
         sensitivity: float = 60.0,
+        bg_color: list[float] | None = None,
     ):
         self.obj = obj
         self.camera = (
@@ -29,6 +29,10 @@ class ObjViewer:
         self.light = (
             LightSource().to(obj.device) if light is None else light.to(obj.device)
         )
+        if bg_color is None:
+            bg_color = [1.0, 1.0, 1.0]
+        self.bg_color = torch.tensor(bg_color, device=self.camera.device)
+        self.renderer = Renderer.basic(self.bg_color)
         self.sensitivity = sensitivity
         self.rot_x: int = 0
         self.rot_y: int = 0
@@ -68,43 +72,6 @@ class ObjViewer:
         img.save(str(path))
         self._frame_idx += 1
 
-    def set_background(self, bg: Tensor | Splimage | None) -> None:
-        if bg is None:
-            self._bg_color = None
-            self._bg_image = None
-        elif isinstance(bg, Splimage):
-            self._bg_color = None
-            self._bg_image = bg.to(self.obj.device)
-        elif isinstance(bg, Tensor):
-            self._bg_image = None
-            self._bg_color = bg.flatten().to(self.obj.device)
-        else:
-            raise TypeError(
-                f"Expected Tensor, Splimage, or None, got {type(bg).__name__}"
-            )
-
-    def _apply_background(
-        self, render: Float[Tensor, "B 4 H W"]
-    ) -> Float[Tensor, "B 4 H W"]:
-        B, C, H, W = render.shape
-        rgb = render[:, :3]
-        alpha = render[:, 3:4]
-
-        if self._bg_image is not None:
-            bg = self._bg_image.image().to(render.device)
-            if bg.shape[2] != H or bg.shape[3] != W:
-                bg = ImgUtils.resize(bg, H, W)
-            if bg.shape[0] < B:
-                bg = bg.expand(B, -1, -1, -1)
-            bg = bg[:, :3]
-        elif self._bg_color is not None:
-            bg = self._bg_color.view(1, 3, 1, 1).expand(B, -1, H, W)
-        else:
-            return render
-
-        composited = (alpha * rgb + (1 - alpha) * bg).clamp(0, 1)
-        return torch.cat([composited, torch.ones_like(alpha)], dim=1)
-
     @torch.no_grad()
     def get_render(self, H: int, W: int) -> Float[Tensor, "B 4 H W"]:
         if H != self.camera.H or W != self.camera.W:
@@ -112,11 +79,14 @@ class ObjViewer:
         self.check_rotation()
         self.check_roll()
         self.check_translation()
-        if isinstance(self.obj, Deformation) and not self.view_deformed:
-            render = self.obj.model.rasterize(self.camera, self.light)
+        if isinstance(self.obj, Deformation):
+            if self.view_deformed:
+                model = self.obj.deformed(self.camera)
+            else:
+                model = self.obj.model
         else:
-            render = self.obj.rasterize(self.camera, self.light)
-        render = self._apply_background(render)
+            model = self.obj
+        render = self.renderer(model, self.camera, self.light)["render"]
         self._save_frame(render)
         return render
 

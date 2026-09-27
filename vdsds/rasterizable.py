@@ -1,7 +1,7 @@
 from jaxtyping import Float
 from torch import Tensor
 
-from .utils.camera import Camera
+from .rendering.camera import Camera
 
 
 class Rasterizable:

@@ -3,15 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import nvdiffrast.torch as dr
 import torch
-import torch.nn.functional as torch_F
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from ..utils.camera import Camera
-from ..utils.conventions import NVDIFFRAST_CONVERSION_MTX, OPENGL_CONVERSION_MTX, UP
-from ..utils.light import LightSource
 from .base import Model
 
 logger = logging.getLogger(__name__)
@@ -48,18 +43,6 @@ class Mesh(Model):
             if texture is None
             else texture.contiguous()
         )
-        self.opengl_conversion = torch.tensor(
-            OPENGL_CONVERSION_MTX,
-            dtype=V.dtype,
-            device=V.device,
-        )
-        self.nvdiffrast_conversion = torch.tensor(
-            NVDIFFRAST_CONVERSION_MTX,
-            dtype=V.dtype,
-            device=V.device,
-        )
-        self.up = torch.tensor(UP, device=V.device, dtype=torch.float32)
-        self.ctx = dr.RasterizeCudaContext()
 
     def _tensors(self) -> dict[str, Tensor]:
         return {
@@ -75,12 +58,7 @@ class Mesh(Model):
 
     def to(self, device: torch.device | str) -> Mesh:
         super().to(device)
-        self.opengl_conversion = self.opengl_conversion.to(device)
-        self.nvdiffrast_conversion = self.nvdiffrast_conversion.to(device)
-        self.up = self.up.to(device)
         device = self.device
-        if device.type == "cuda":
-            self.ctx = dr.RasterizeCudaContext()
         return self
 
     def _dict_data(self) -> dict[str, Any]:
@@ -489,144 +467,6 @@ class Mesh(Model):
         emb_data = data[F]
         b_co = b_co.unsqueeze(-1)
         return (emb_data * b_co).sum(dim=1)
-
-    def camera_to_nvdiffrast(self, camera):
-        device = self.device
-        dtype = camera.w2c.dtype
-
-        # Rotate the camera's orbital coordinate system:
-        #
-        # camera's default position:
-        #     (0, 0, -r)
-        #
-        # becomes:
-        #     (0, -r, 0)
-        #
-        # This is a +90° rotation around world X.
-
-        # Your camera convention:
-        #   +X right
-        #   +Y down
-        #   +Z forward
-        #
-        # OpenGL:
-        #   +X right
-        #   +Y up
-        #   -Z forward
-        gl_conversion = torch.diag(
-            torch.tensor(
-                [1.0, -1.0, -1.0, 1.0],
-                dtype=dtype,
-                device=device,
-            )
-        )
-
-        fx = camera.Fx
-        fy = camera.Fx
-
-        projection = torch.zeros(
-            (4, 4),
-            dtype=dtype,
-            device=device,
-        )
-
-        projection[0, 0] = 2 * fx / camera.W
-        projection[1, 1] = -2 * fy / camera.H
-
-        zn = camera.Zn
-        zf = camera.Zf
-
-        projection[2, 2] = -(zf + zn) / (zf - zn)
-        projection[2, 3] = -2 * zf * zn / (zf - zn)
-        projection[3, 2] = -1
-
-        return projection @ gl_conversion @ camera.w2c @ self.nvdiffrast_conversion
-
-    @property
-    def VH(self) -> Float[Tensor, "V 4"]:
-        return torch.cat(
-            [self.V, torch.ones(self.V.shape[0], 1, device=self.V.device)], dim=1
-        )
-
-    def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
-        return dr.interpolate(
-            self.texture[None].expand(self.num_V, 3).contiguous(), rast, self.F
-        )[0]
-
-    def lambert_shade(
-        self,
-        rast,
-        albedo_map: Float[Tensor, "B H W 4"],
-        camera: Camera,
-        light: LightSource,
-    ) -> Float[Tensor, "B H W 4"]:
-        normal_map, _ = dr.interpolate(self.vertex_normals_normalized, rast, self.F)
-        pos_map, _ = dr.interpolate(self.V, rast, self.F)
-        ray_map = light.origin[None, None, None] - pos_map
-        return (
-            albedo_map
-            * light.strength
-            * (ray_map * normal_map).sum(dim=-1, keepdim=True)
-        )
-
-    def half_lambert_shade(
-        self,
-        rast,
-        albedo_map: Float[Tensor, "B H W 4"],
-        camera: Camera,
-        light: LightSource,
-    ) -> Float[Tensor, "B H W 4"]:
-        normal_map, _ = dr.interpolate(self.vertex_normals_normalized, rast, self.F)
-        pos_map, _ = dr.interpolate(self.V, rast, self.F)
-        ray_map = light.origin[None, None, None] - pos_map
-        return (
-            albedo_map
-            * light.strength
-            * ((ray_map * normal_map).sum(dim=-1, keepdim=True) / 2 + 0.5)
-        )
-
-    def to_nvdiffrast(self, vals: Float[Tensor, "N C"]) -> Float[Tensor, "... C"]:
-        N, C = vals.shape
-        return vals @ self.nvdiffrast_conversion[:C, :C]
-
-    def soft_lambert_shade(
-        self,
-        rast,
-        albedo_map: Float[Tensor, "B H W 4"],
-        camera: Camera,
-        light: LightSource,
-        beta: float = 5.0,
-    ) -> Float[Tensor, "B H W 4"]:
-        normal_map, _ = dr.interpolate(self.vertex_normals_normalized, rast, self.F)
-        pos_map, _ = dr.interpolate(self.V, rast, self.F)
-        ray_map = light.origin[None, None, None] - pos_map
-        align_map = (ray_map * normal_map).sum(dim=-1, keepdim=True)
-        return albedo_map * light.strength * (torch_F.softplus(align_map, beta=beta))
-
-    def rasterize(
-        self,
-        camera: Camera,
-        light: LightSource,
-        shading: str = "soft",
-        antialias: bool = True,
-    ) -> Float[Tensor, "B 4 H W"]:
-        pos_clip = self.VH @ self.camera_to_nvdiffrast(camera).T
-        rast, _ = dr.rasterize(self.ctx, pos_clip[None], self.F, [camera.H, camera.W])
-        albedo = self.raster_albedo(rast)
-        if shading == "lambert":
-            rgb = self.lambert_shade(rast, albedo, camera, light)
-        elif shading == "soft":
-            rgb = self.soft_lambert_shade(rast, albedo, camera, light)
-        elif shading == "half":
-            rgb = self.half_lambert_shade(rast, albedo, camera, light)
-        rgba = torch.cat(
-            [rgb, torch.ones((*rgb.shape[:3], 1), device=rgb.device)], dim=-1
-        )
-        rgba = torch.where(rast[..., 3:4] > 0, rgba, torch.zeros_like(rgba))
-        if antialias:
-            pos_clip_batched = pos_clip[None] if pos_clip.ndim == 2 else pos_clip
-            rgba = dr.antialias(rgba, rast, pos_clip_batched, self.F)
-        return rgba.permute(0, 3, 1, 2).clamp(0, 1)
 
     @classmethod
     def from_mesh_data(

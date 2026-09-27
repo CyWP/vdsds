@@ -25,6 +25,7 @@ class LightSource:
         self.origin = torch.tensor(self._up) if origin is None else origin
         self.strength = torch.tensor(1.5) if strength is None else strength
 
+    @property
     def device(self) -> torch.device:
         return self.origin.device
 

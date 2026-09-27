@@ -3,11 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from jaxtyping import Float
 from torch import Tensor
 
-from ..utils.camera import Camera
-from ..utils.light import LightSource
 from ..utils.serialization import load_dict, save_dict, to_serializable
 
 
@@ -171,9 +168,3 @@ class Model:
 
     def centroid(self) -> torch.Tensor:
         raise NotImplementedError()
-
-    def rasterize(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
-        raise NotImplementedError()
-
-    def forward(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
-        return self.rasterize(camera, light)

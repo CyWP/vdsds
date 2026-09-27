@@ -7,12 +7,21 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from ..utils.camera import Camera
+from ..rendering import Camera, LightSource, Renderer
+from ..rendering.shader import (
+    Albedo,
+    Alpha,
+    Antialias,
+    BackgroundColor,
+    LambdaShader,
+    Normal,
+    SoftLambertShader,
+)
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..utils.img import Splimage
-from ..utils.light import LightSource
+from ..utils.img import Splimage, ImgUtils
 from ..utils.quaternion import Quaternion
+from ..utils.resize_right import resize
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
@@ -53,12 +62,19 @@ class TrainModelSDS(ViewableScript):
             "normalize": False,
         },
         "camera": {
+            "H": 512,
+            "W": 512,
             "views": 16,
             "point_upwards": True,
             "radius": 1.5,
-            "bg_color": [0.1, 0.7, 0.0],  # Options: 'random' or provide color.
-            "jitters": 3,
+            "bg_color": [1.0, 1.0, 1.0],  # Options: 'random' or provide color.
+            "jitters": 0,
             "jitter_sigma": math.pi / 10,
+        },
+        "shader": {
+            "down_H": 224,
+            "down_W": 224,
+            "down_blur": 7,
         },
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
@@ -77,6 +93,7 @@ class TrainModelSDS(ViewableScript):
         df = DeepFloydGuidance(config.diffusion, device)
         torch.manual_seed(config.optim.seed)
         self.model.train(train_model=False)
+        self.renderer = self.get_renderer()
         ref_L = self.model.model.L_cotan
         txt = config.diffusion.prompt
         n_views = config.camera.views
@@ -129,15 +146,15 @@ class TrainModelSDS(ViewableScript):
             )
 
     def camera_batch(self) -> list[Camera]:
-        config = self.config
+        cfg = self.config.camera
         return [
             Camera.random_rot(
-                H=224,
-                W=224,
-                radius=config.camera.radius,
-                point_upwards=config.camera.point_upwards,
+                H=cfg.H,
+                W=cfg.W,
+                radius=cfg.radius,
+                point_upwards=cfg.point_upwards,
             ).to(self.device)
-            for _ in range(config.camera.views)
+            for _ in range(cfg.views)
         ]
 
     def log(self, epoch: int, data: dict[str, any]):
@@ -235,10 +252,33 @@ class TrainModelSDS(ViewableScript):
             origin = Q_rot.rotate_vector(origin)
         return LightSource(origin=origin)
 
+    def get_renderer(self) -> Renderer:
+        cfg = self.config
+        shaders = [
+            Albedo(),
+            Normal(),
+            Alpha(apply_to={"render"}),
+            BackgroundColor(
+                color=torch.tensor(cfg.camera.bg_color, device=self.device),
+                apply_to={"render"},
+            ),
+            SoftLambertShader(apply_to={"render"}),
+            Antialias(apply_to={"render"}),
+            LambdaShader(
+                lambda ctx, i: resize(
+                    i.permute(0, 3, 1, 2),
+                    out_shape=(cfg.shader.down_H, cfg.shader.down_W),
+                ).permute(0, 2, 3, 1),
+                apply_to={"render"},
+            ),
+        ]
+        return Renderer(shaders, self.device)
+
     def get_training_renders(self, cameras: list[Camera]) -> Float[Tensor, "B 3 H W"]:
         cfg = self.config
         jitters = cfg.camera.jitters
         jitter_sigma = cfg.camera.jitter_sigma
+        rend = self.renderer
         pu = cfg.camera.point_upwards
         renders = []
         for cam in cameras:
@@ -256,10 +296,11 @@ class TrainModelSDS(ViewableScript):
                 light = self.randomized_light(render_cam)
                 if i > 0:
                     light.origin *= -1  # I have no clue why the fuck this is necessary
-                render = self.model.deformed(deform_cam).rasterize(render_cam, light)
+                render = rend(self.model.deformed(deform_cam), render_cam, light)[
+                    "render"
+                ]
                 renders.append(render)
-        renders = torch.cat(renders, dim=0)
-        return self.apply_bg(renders, bg=self.get_bg_color())
+        return torch.cat(renders, dim=0)
 
     def get_renders(
         self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None

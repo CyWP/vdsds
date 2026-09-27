@@ -8,8 +8,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from .conventions import FORWARD, UP
-from .math import RAD2DEG
-from .quaternion import Quaternion
+from ..utils.math import RAD2DEG
+from ..utils.quaternion import Quaternion
 
 
 class CameraCoordinates:
@@ -156,39 +156,19 @@ class Camera:
         fx = self.Fx
         fy = self.Fx
 
-        A = (self.Zf + self.Zn) / (self.Zf - self.Zn)
+        A = -(self.Zf + self.Zn) / (self.Zf - self.Zn)
         B = -2.0 * self.Zf * self.Zn / (self.Zf - self.Zn)
 
         return torch.tensor(
             [
                 [2.0 * fx / self.W, 0.0, 0.0, 0.0],
-                [0.0, 2.0 * fy / self.H, 0.0, 0.0],
+                [0.0, -2.0 * fy / self.H, 0.0, 0.0],
                 [0.0, 0.0, A, B],
-                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
             ],
             dtype=self.dtype,
             device=self.device,
         )
-
-    # @property
-    # def projection(self):
-    #     fx = self.Fx
-    #     fy = self.Fx
-
-    #     A = -(self.Zf + self.Zn) / (self.Zf - self.Zn)
-    #     B = -(2.0 * self.Zf * self.Zn) / (self.Zf - self.Zn)
-
-    #     z = torch.zeros((), dtype=self.dtype, device=self.device)
-    #     o = torch.ones((), dtype=self.dtype, device=self.device)
-
-    #     return torch.stack(
-    #         [
-    #             torch.stack([2 * fx / self.W, z, z, z]),
-    #             torch.stack([z, -2 * fy / self.H, z, z]),
-    #             torch.stack([z, z, A, B]),
-    #             torch.stack([z, z, -o, z]),
-    #         ]
-    #     )
 
     @property
     def Rt(self) -> tuple[Float[Tensor, "3 3"], Float[Tensor, "3 1"]]:

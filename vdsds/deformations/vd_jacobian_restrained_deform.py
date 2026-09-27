@@ -8,7 +8,7 @@ from torch import Tensor
 
 from ..representations import get_model
 from ..representations.mesh import Mesh
-from ..utils.camera import Camera
+from ..rendering.camera import Camera
 from ..utils.poisson_system import PoissonSystem
 from ..utils.spherical_basis import SphericalGaussianBasis
 from .base import Deformation
