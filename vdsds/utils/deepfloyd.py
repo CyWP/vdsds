@@ -169,6 +169,29 @@ class DeepFloydGuidance(nn.Module):
         **kwargs,
     ):
         batch_size = rgb.shape[0] // (prompt_num + 1)
+        if attn_ctrl_alphas is not None:
+            alpha_t = torch.as_tensor(attn_ctrl_alphas)
+            if alpha_t.dim() == 1:
+                if alpha_t.shape[0] != prompt_num - 1:
+                    raise ValueError(
+                        "attn_ctrl_alphas as [n_prompts-1] requires length "
+                        f"{prompt_num - 1}, got {alpha_t.shape[0]}"
+                    )
+            elif alpha_t.dim() == 2:
+                if alpha_t.shape[1] != prompt_num - 1 or alpha_t.shape[0] not in (
+                    1,
+                    batch_size,
+                ):
+                    raise ValueError(
+                        "attn_ctrl_alphas as [B, n_prompts-1] requires shape "
+                        f"[{batch_size}, {prompt_num - 1}] (or [1, {prompt_num - 1}]), "
+                        f"got {tuple(alpha_t.shape)}"
+                    )
+            else:
+                raise ValueError(
+                    "attn_ctrl_alphas must be [n_prompts-1], [1, n_prompts-1], "
+                    f"or [B, n_prompts-1]; got ndim {alpha_t.dim()}"
+                )
         rgb = rgb * 2.0 - 1.0  # scale to [-1, 1] to match the diffusion range
         latents = F.interpolate(rgb, (64, 64), mode="bilinear", align_corners=False)
         # we can potentially do this later
@@ -212,7 +235,8 @@ class DeepFloydGuidance(nn.Module):
                 t,
                 text_embeds[: batch_size * prompt_num],
             )
-            save_forward(self.pipe)
+            # restore the original attention forward cached at the top of
+            # this call so the uncond pass runs clean (unpatched) attention
             unregister_attention_control(self.pipe)
             t_noise_pred_uncond = self.forward_unet(
                 latents_noisy_uncond,

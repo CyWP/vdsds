@@ -6,9 +6,9 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
+from ..rendering.camera import Camera
 from ..representations import get_model
 from ..representations.mesh import Mesh
-from ..rendering.camera import Camera
 from ..utils.poisson_system import PoissonSystem
 from ..utils.spherical_basis import SphericalGaussianBasis
 from .base import Deformation

@@ -79,10 +79,9 @@ def box(x):
     return to_dtype((-1 <= x) & (x < 0)) + to_dtype((0 <= x) & (x <= 1))
 
 
-from typing import Tuple
 import warnings
-from math import ceil
 from fractions import Fraction
+from math import ceil
 
 
 class NoneClass:

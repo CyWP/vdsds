@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# from utils import pix2patch
+# import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
-
-# from utils import pix2patch
-# import matplotlib.pyplot as plt
 
 
 # def print_attention(attn, num_imgs, dim, title, count):
@@ -165,7 +164,7 @@ def register_activation_control(
         def forward(
             hidden_states, encoder_hidden_states=None, attention_mask=None, temb=None
         ):
-            αn = len(self.replace_alpha)
+            αn = self.replace_alpha.shape[-1]
             B = hidden_states.shape[0] // (αn + 1)
 
             residual = hidden_states
@@ -214,9 +213,16 @@ def register_activation_control(
             out = out.transpose(1, 2).reshape(residual.shape)
 
             # **Blend replacement branches here** and add residual
-            blend = sum(
-                out[i * B : (i + 1) * B] * self.replace_alpha[i] for i in range(αn)
-            )
+            # accepted alphas shapes: [B, αn], [1, αn] (== [αn], uniform over
+            # views), [αn]; anything else must fail at ActvnReplace entry
+            w = self.replace_alpha.to(device=out.device, dtype=out.dtype)
+            if w.dim() == 1:
+                w = w[None, :]
+            assert w.ndim == 2 and w.shape[1] == αn and w.shape[0] in (1, B)
+            if w.shape[0] == 1:
+                w = w.expand(B, αn)
+            rows = out[: B * αn].reshape(αn, B, *out.shape[1:])
+            blend = torch.einsum("pb...,pb->b...", rows, w.t())
             out[B * αn : B * (αn + 1)] = blend
 
             return out + residual
@@ -266,7 +272,7 @@ def register_activation_control(
             net_.place_in_unet = place_in_unet
             net_.control_vertex = control_vertex
             net_.vp_map = vp_map
-            net_.replace_alpha = replace_alpha
+            net_.replace_alpha = torch.as_tensor(replace_alpha)
             net_.prompt_num = prompt_num
             net_.random_replace = random_replace
             return count + 1
@@ -285,8 +291,10 @@ def register_activation_control(
         return count
 
     if prompt_num > 2:
-        # if prompt number is greater than 2, than replace alpha should be a list of length prompt_number-1
-        assert len(replace_alpha) == prompt_num - 1
+        # alphas must cover the concept branches (one weight per concept,
+        # per-view batching is allowed via a [B, prompt_num-1] tensor)
+        tensor = torch.as_tensor(replace_alpha)
+        assert tensor.shape[-1] == prompt_num - 1
     cross_att_count = 0
     sub_nets = model.unet.named_children()
     for net in sub_nets:

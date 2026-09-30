@@ -80,7 +80,7 @@ class Alpha(BranchShader):
 class BackgroundColor(BranchShader):
     def __init__(
         self,
-        color: Float[Tensor, "3"],
+        color: Float[Tensor, 3],
         apply_to: set[str] | None = None,
     ):
         super().__init__(apply_to=apply_to)

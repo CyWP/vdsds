@@ -19,9 +19,10 @@ from ..rendering.shader import (
 )
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..utils.img import Splimage, ImgUtils
+from ..utils.img import Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
+from ..utils.spherical_basis import SphericalGaussianBasis
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
@@ -37,28 +38,33 @@ class TrainModelSDS(ViewableScript):
         },
         "optim": {
             "epochs": 400,
-            "lr": 0.005,
+            "lr": 0.02,
             "accum_steps": 2,
             "seed": 42,
         },
         "diffusion": {
-            "prompt": "Rhinoceros",
+            "loss": "bsd",  # Options: 'sds','bsd'
             "model_size": "M",  # Options: 'S', 'M', 'L', 'XL'
             "dtype": "float16",
             "cpu_offload": False,
             "guidance_scale": 7.5,
         },
+        "prompt": {
+            "text": ["Cute cartoon giraffe", "Cute cartoon rhinoceros"],
+            "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            "overlap": 1.5,
+        },
         "loss": {
-            "sds": 1.0,
+            "diffusion": 1.0,
             "jacobian": 500.0,
-            "laplacian": 10000.0,
+            "laplacian": 0.0,
         },
         "model": {"name": "mesh"},
         "deformation": {
-            "name": "vd_restrained",  # Options: 'full', 'vd_full', 'vd_restrained'
+            "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 8,
             "init": "random",  # Options: 'fibonacci', 'random'
-            "overlap": 2.0,
+            "overlap": 1.5,
             "normalize": False,
         },
         "camera": {
@@ -67,14 +73,12 @@ class TrainModelSDS(ViewableScript):
             "views": 16,
             "point_upwards": True,
             "radius": 1.5,
-            "bg_color": [1.0, 1.0, 1.0],  # Options: 'random' or provide color.
-            "jitters": 0,
-            "jitter_sigma": math.pi / 10,
+            "bg_color": [0.2, 0.7, 0.0],  # Options: 'random' or provide color.
+            "aug_views": 0,
         },
         "shader": {
             "down_H": 224,
             "down_W": 224,
-            "down_blur": 7,
         },
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
@@ -94,23 +98,8 @@ class TrainModelSDS(ViewableScript):
         torch.manual_seed(config.optim.seed)
         self.model.train(train_model=False)
         self.renderer = self.get_renderer()
-        ref_L = self.model.model.L_cotan
-        txt = config.diffusion.prompt
-        n_views = config.camera.views
-        cams_per_view = 1 + config.camera.jitters
         accum_steps = config.optim.accum_steps
-        n_samples = n_views * accum_steps
-        if isinstance(txt, list):
-            prompts = [
-                p + ", a 3d rendering" if i != len(txt) - 1 else p
-                for i, p in enumerate(txt)
-            ]
-        else:
-            prompts = [txt + ", a 3d rendering"]
-        print("Target text prompt:", txt)
-        text_embeds = df.encode_text_2(
-            prompts, negative_prompt=[""] * cams_per_view, batch_size=cams_per_view
-        ).to(device)
+        prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
         optimizer = torch.optim.Adam(
             [*self.model.parameters()],
             lr=config.optim.lr,
@@ -122,18 +111,21 @@ class TrainModelSDS(ViewableScript):
             optimizer.zero_grad()
             cameras = self.camera_batch()
             for _ in range(config.optim.accum_steps):
-                for i, cam in enumerate(cameras):
-                    tgt_render = self.get_training_renders([cam])
-                    # Splimage(tgt_render.clone().detach()).save(path / f"{i:03}.png")
-                    loss = (
-                        df.SDS(tgt_render, text_embeds, controller=None)["loss_sds"]
-                        / n_samples
-                        * config.loss.sds
+                # loss = (
+                #     df.SDS(tgt_renders, text_embeds, controller=None)["loss_sds"]
+                #     / accum_steps
+                #     * config.loss.diffusion
+                # )
+                loss = (
+                    self.diffusion_loss(
+                        cameras, df, text_embeds, prompt_basis, len(prompts)
                     )
-                    loss.backward()
-                    epoch_loss += loss.item()
+                    * config.loss.diffusion
+                ) / accum_steps
+                loss.backward()
+                epoch_loss += loss.item()
             j_loss = self.jacobian_loss() * config.loss.jacobian * accum_steps
-            l_loss = self.laplacian_loss(ref_L) * config.loss.laplacian * accum_steps
+            l_loss = self.laplacian_loss() * config.loss.laplacian * accum_steps
             (j_loss + l_loss).backward()
             optimizer.step()
             self.log(
@@ -145,17 +137,101 @@ class TrainModelSDS(ViewableScript):
                 },
             )
 
-    def camera_batch(self) -> list[Camera]:
-        cfg = self.config.camera
-        return [
-            Camera.random_rot(
-                H=cfg.H,
-                W=cfg.W,
-                radius=cfg.radius,
-                point_upwards=cfg.point_upwards,
+    def get_text_embeds(
+        self, df: DeepFloydGuidance
+    ) -> tuple[list[str], Float[Tensor, "..."], SphericalGaussianBasis | None]:
+        cfg = self.config
+        txt = cfg.prompt.text
+        views = cfg.camera.views
+        aug_views = cfg.camera.aug_views
+        batch_size = views * (1 + aug_views)
+        if isinstance(txt, list):
+            prompts = [p + ", a 3d rendering" for p in txt]
+        else:
+            prompts = [txt + ", a 3d rendering"]
+        if cfg.diffusion.loss == "bsd":
+            basis = SphericalGaussianBasis(
+                num_funcs=len(txt),
+                num_dims=1,
+                batch_size=1,
+                sigma_overlap=cfg.prompt.overlap,
+                centroids=torch.tensor(cfg.prompt.anchors, dtype=torch.float32),
+                normalize=True,
             ).to(self.device)
-            for _ in range(cfg.views)
-        ]
+            prompts.append("")
+        else:
+            basis = None
+        text_embeds = df.encode_text_2(
+            prompts,
+            # negative_prompt=[""] * batch_size,
+            batch_size=batch_size,
+        )
+        return prompts, text_embeds, basis
+
+    def diffusion_loss(
+        self,
+        cameras: list[tuple[Camera, Camera]],
+        df: DeepFloydGuidance,
+        text_embeds,
+        alpha_basis: SphericalGaussianBasis | None,
+        num_prompts: int,
+    ) -> Float[Tensor, ""]:
+        cfg = self.config.diffusion
+        renders = self.get_training_renders(cameras)
+        if cfg.loss == "sds":
+            rt = df.SDS(renders, text_embeds, controller=None)
+        else:
+            with torch.no_grad():
+                deltas = self.model.model.centroid - torch.stack(
+                    [dc.location for rc, dc in cameras], dim=0
+                )
+                attn_alphas = alpha_basis._norm_basis(deltas)
+            assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
+                f"render batch {renders.shape[0]} × {num_prompts + 1} branches "
+                f"!= embed rows {text_embeds.shape[0]}"
+            )
+            rt = df.ActvnReplace(
+                torch.cat([renders] * (num_prompts + 1), dim=0),
+                text_embeds,
+                prompt_num=num_prompts,
+                controller=None,
+                attn_ctrl_alphas=attn_alphas.tolist(),
+            )
+        return rt["loss_sds"]
+
+    def get_training_renders(
+        self, cameras: list[tuple[Camera, Camera]]
+    ) -> Float[Tensor, "B 3 H W"]:
+        cfg = self.config
+        renders = []
+        for i, (render_cam, deform_cam) in enumerate(cameras):
+            light = self.randomized_light(render_cam)
+            # if i > 0:
+            #     light.origin *= -1  # I have no clue why the fuck this is necessary
+            render = self.renderer(self.model.deformed(deform_cam), render_cam, light)[
+                "render"
+            ]
+            renders.append(render)
+        return torch.cat(renders, dim=0)
+
+    def random_cam(self) -> Camera:
+        cfg = self.config.camera
+        return Camera.random_rot(
+            H=cfg.H,
+            W=cfg.W,
+            radius=cfg.radius,
+            point_upwards=cfg.point_upwards,
+        ).to(self.device)
+
+    def camera_batch(self) -> list[tuple[Camera, Camera]]:
+        cfg = self.config.camera
+        base_cams = [self.random_cam() for _ in range(cfg.views)]
+        cameras = []
+        for cam in base_cams:
+            cameras.append((cam, cam))
+            for _ in range(cfg.aug_views):
+                cameras.append((self.random_cam(), cam))
+        return cameras
 
     def log(self, epoch: int, data: dict[str, any]):
         if not hasattr(self, "_logs"):
@@ -222,12 +298,14 @@ class TrainModelSDS(ViewableScript):
             return (self.model.J_deform.weights**2).mean()
         return (self.model.J_deform**2).mean()
 
-    def laplacian_loss(self, ref_L) -> torch.Tensor:
+    def laplacian_loss(self) -> torch.Tensor:
         J = torch.einsum("bfij,cfjk->bfik", self.model.jacobians_3d(), self.model.J_src)
         V_disps = self.model.poisson.solve_poisson(J) - self.model.model.V[None]
         B, N, C = V_disps.shape
         Y = (
-            torch.sparse.mm(ref_L, V_disps.permute(1, 0, 2).reshape(N, B * C))
+            torch.sparse.mm(
+                self.model.model.L_cotan_csr, V_disps.permute(1, 0, 2).reshape(N, B * C)
+            )
             .reshape(N, B, C)
             .permute(1, 0, 2)
         )
@@ -257,12 +335,12 @@ class TrainModelSDS(ViewableScript):
         shaders = [
             Albedo(),
             Normal(),
+            SoftLambertShader(apply_to={"render"}),
             Alpha(apply_to={"render"}),
             BackgroundColor(
                 color=torch.tensor(cfg.camera.bg_color, device=self.device),
                 apply_to={"render"},
             ),
-            SoftLambertShader(apply_to={"render"}),
             Antialias(apply_to={"render"}),
             LambdaShader(
                 lambda ctx, i: resize(
@@ -273,61 +351,3 @@ class TrainModelSDS(ViewableScript):
             ),
         ]
         return Renderer(shaders, self.device)
-
-    def get_training_renders(self, cameras: list[Camera]) -> Float[Tensor, "B 3 H W"]:
-        cfg = self.config
-        jitters = cfg.camera.jitters
-        jitter_sigma = cfg.camera.jitter_sigma
-        rend = self.renderer
-        pu = cfg.camera.point_upwards
-        renders = []
-        for cam in cameras:
-            pairs = [(cam, cam)]
-            for _ in range(jitters):
-                j_cam = cam.copy()
-                j_cam.co.Q = j_cam.co.Q * Quaternion.from_axis_angle(
-                    torch.rand((3,), device=cam.device) - 0.5,
-                    torch.randn((), device=cam.device) * jitter_sigma,
-                )
-                # if pu:
-                #     j_cam = j_cam.point_upwards()
-                pairs.append((j_cam, cam))
-            for i, (render_cam, deform_cam) in enumerate(pairs):
-                light = self.randomized_light(render_cam)
-                if i > 0:
-                    light.origin *= -1  # I have no clue why the fuck this is necessary
-                render = rend(self.model.deformed(deform_cam), render_cam, light)[
-                    "render"
-                ]
-                renders.append(render)
-        return torch.cat(renders, dim=0)
-
-    def get_renders(
-        self, cameras: list[Camera], bg: Float[Tensor, "3"] | None = None
-    ) -> Float[Tensor, "B 3 H W"]:
-        renders = torch.cat(
-            [self.model.rasterize(cam, self.randomized_light(cam)) for cam in cameras],
-            dim=0,
-        )
-        if bg is not None:
-            return self.apply_bg(renders, bg)
-        return renders
-
-    def apply_bg(
-        self, renders: Float[Tensor, "B 4 H W"], bg: Float[Tensor, "3"]
-    ) -> Float[Tensor, "B 3 H W"]:
-        B, C, H, W = renders.shape
-        alpha = renders[:, 3].unsqueeze(1)
-        renders = alpha * renders[:, :3] + (1 - alpha) * bg[None, :, None, None].expand(
-            B, -1, H, W
-        )
-        return renders
-
-    def get_bg_color(self) -> Float[Tensor, "3"]:
-        bg = self.config.camera.bg_color
-        if isinstance(bg, list):
-            return torch.tensor(bg, device=self.device, dtype=self.dtype)
-        elif bg == "random":
-            return torch.rand(3, device=self.device, dtype=self.dtype)
-        else:
-            raise ValueError(f"Invalid background color value: '{bg}'.")

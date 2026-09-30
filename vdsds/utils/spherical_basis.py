@@ -228,7 +228,9 @@ class SphericalGaussianBasis(nn.Module):
         # (g = 0) evaluate to exp(0) = 1 and every gradient stays finite.
         if self.batched_basis:
             m = self._axis_dirs()  # (B, N, 3)
-            g = (1.0 - (m[:, :, None] * m[:, None, :]).sum(-1)).clamp_min(0.0)  # (B, N, N)
+            g = (1.0 - (m[:, :, None] * m[:, None, :]).sum(-1)).clamp_min(
+                0.0
+            )  # (B, N, N)
             w = self.log_sigmas.exp().clamp_min(torch.finfo(m.dtype).tiny)  # (B, N)
             # Product of the two independent gaussian tails:
             # exp(-g/(2w_i)) * exp(-g/(2w_j)) = exp(-g*(w_i + w_j)/(2 w_i w_j))
@@ -297,9 +299,15 @@ class SphericalGaussianBasis(nn.Module):
             )  # (B, M, N)
             inv = 0.5 / self.log_sigmas.exp().clamp_min(tiny).unsqueeze(1)  # (B, 1, N)
         else:
-            g = (1.0 - (u.unsqueeze(-2) * m).sum(-1)).clamp_min(0.0)  # (M, N) or (B, M, N)
+            g = (1.0 - (u.unsqueeze(-2) * m).sum(-1)).clamp_min(
+                0.0
+            )  # (M, N) or (B, M, N)
             inv = 0.5 / self.log_sigmas.exp().clamp_min(tiny)  # (N,)
         return torch.exp(-g * inv)  # (M, N) or (B, M, N)
+
+    def _norm_basis(self, u: Float[Tensor, "... M 3"]) -> Float[Tensor, "... M N"]:
+        basis = self._basis(u)
+        return basis / basis.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
     def _from_unit_directions(
         self, u: Float[Tensor, "B M 3"] | Float[Tensor, "M 3"]
@@ -317,12 +325,9 @@ class SphericalGaussianBasis(nn.Module):
         Returns:
             out: Interpolated values (B, M, D).
         """
-        basis = self._basis(u)  # (M, N) or (B, M, N)
-        if self.normalize:
-            # Rescale to a partition of unity per query point. The clamp
-            # guards against all-underflow (tiny widths, antipodal queries):
-            # the row stays 0 and the output falls back to 0, not NaN.
-            basis = basis / basis.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        basis = (
+            self._basis(u) if self.normalize else self._norm_basis(u)
+        )  # (M, N) or (B, M, N)
         if basis.ndim == 2:
             out = torch.einsum(
                 "mn,fnd->fmd", basis, self.weights

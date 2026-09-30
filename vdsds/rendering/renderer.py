@@ -13,12 +13,12 @@ from .context import RenderContext
 from .conventions import NVDIFFRAST_CONVERSION_MTX, OPENGL_CONVERSION_MTX, UP
 from .light import LightSource
 from .shader import (
-    Shader,
     Albedo,
     Alpha,
     Antialias,
-    Normal,
     BackgroundColor,
+    Normal,
+    Shader,
     SoftLambertShader,
 )
 
@@ -58,19 +58,19 @@ class Renderer:
     @classmethod
     def basic(
         cls,
-        bg_color: Float[Tensor, "3"],
+        bg_color: Float[Tensor, 3],
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> Renderer:
         shaders = [
             Albedo(),
             Normal(),
+            SoftLambertShader(apply_to={"render"}),
             Alpha(apply_to={"render"}),
             BackgroundColor(
                 color=bg_color,
                 apply_to={"render"},
             ),
-            SoftLambertShader(apply_to={"render"}),
             Antialias(apply_to={"render"}),
         ]
         return Renderer(shaders, device=device, dtype=dtype)

@@ -7,10 +7,10 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..rendering.camera import Camera, CameraCoordinates
+from ..rendering.light import LightSource
 from ..rendering.renderer import Renderer
 from ..utils.config import Config
 from ..utils.img import Splimage
-from ..rendering.light import LightSource
 from ..utils.quaternion import Quaternion
 from ..utils.video import write_video
 from .base import ViewableScript

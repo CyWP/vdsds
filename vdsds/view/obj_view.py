@@ -7,7 +7,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..deformations.base import Deformation
-from ..rendering import Renderer, Camera, LightSource
+from ..rendering import Camera, LightSource, Renderer
 from ..representations.base import Model
 from ..utils.img import ImgUtils, Splimage
 from .keymap import K_CTRL, K_SHIFT
