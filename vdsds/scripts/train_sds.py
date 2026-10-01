@@ -52,11 +52,11 @@ class TrainModelSDS(ViewableScript):
         "prompt": {
             "text": ["Cute cartoon giraffe", "Cute cartoon rhinoceros"],
             "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
-            "overlap": 1.5,
+            "overlap": 3.0,
         },
         "loss": {
             "diffusion": 1.0,
-            "jacobian": 500.0,
+            "jacobian": 50.0,
             "laplacian": 0.0,
         },
         "model": {"name": "mesh"},
@@ -64,17 +64,19 @@ class TrainModelSDS(ViewableScript):
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 8,
             "init": "random",  # Options: 'fibonacci', 'random'
-            "overlap": 1.5,
+            "overlap": 0.8,
             "normalize": False,
         },
         "camera": {
             "H": 512,
             "W": 512,
-            "views": 16,
+            "views": 8,
             "point_upwards": True,
             "radius": 1.5,
             "bg_color": [0.2, 0.7, 0.0],  # Options: 'random' or provide color.
-            "aug_views": 0,
+            "aug_views": 2,
+            "aug_type": "jitter",  # Options: 'jitter', 'random'
+            "jitter_sigma": math.pi / 6,
         },
         "shader": {
             "down_H": 224,
@@ -206,8 +208,6 @@ class TrainModelSDS(ViewableScript):
         renders = []
         for i, (render_cam, deform_cam) in enumerate(cameras):
             light = self.randomized_light(render_cam)
-            # if i > 0:
-            #     light.origin *= -1  # I have no clue why the fuck this is necessary
             render = self.renderer(self.model.deformed(deform_cam), render_cam, light)[
                 "render"
             ]
@@ -223,14 +223,32 @@ class TrainModelSDS(ViewableScript):
             point_upwards=cfg.point_upwards,
         ).to(self.device)
 
+    def jitter_cam(self, camera: Camera, sigma: float, point_upwards: bool) -> Camera:
+        cam = camera.copy()
+        device = cam.device
+        axis = torch.rand((3,), device=device) - 0.5
+        axis /= axis.norm().clamp(min=1e-8)
+        angle = torch.randn((), device=device) * sigma
+        Q_rot = Quaternion.from_axis_angle(axis, angle).to(device)
+        cam.co.Q *= Q_rot
+        if point_upwards:
+            cam = cam.point_upwards()
+        return cam
+
     def camera_batch(self) -> list[tuple[Camera, Camera]]:
         cfg = self.config.camera
+        random_aug = cfg.aug_type == "random"
         base_cams = [self.random_cam() for _ in range(cfg.views)]
         cameras = []
         for cam in base_cams:
             cameras.append((cam, cam))
             for _ in range(cfg.aug_views):
-                cameras.append((self.random_cam(), cam))
+                view_cam = (
+                    self.random_cam()
+                    if random_aug
+                    else self.jitter_cam(cam, cfg.jitter_sigma, cfg.point_upwards)
+                )
+                cameras.append((view_cam, cam))
         return cameras
 
     def log(self, epoch: int, data: dict[str, any]):

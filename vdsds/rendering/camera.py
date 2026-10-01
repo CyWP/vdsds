@@ -250,7 +250,7 @@ class Camera:
         self.co.radius *= exp(-depth * 0.1)
 
     def copy(self) -> Camera:
-        return Camera(self.H, self.W, self.F, self.Zf, self.Zn, self.co.copy())
+        return Camera(self.H, self.W, self.F, self.Zn, self.Zf, self.co.copy())
 
     def clone(self) -> Camera:
         return self.copy()
