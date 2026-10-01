@@ -65,6 +65,23 @@ class BranchShader(Shader, ABC):
         return out
 
 
+class Clamp(BranchShader):
+    def __init__(
+        self,
+        min: float = 0.0,
+        max: float = 1.0,
+        apply_to: set[str] | None = None,
+    ):
+        self.apply_to = apply_to
+        self.min = min
+        self.max = max
+
+    def apply(
+        self, ctx: RenderContext, img: Float[Tensor, "B H W C"]
+    ) -> Float[Tensor, "B H W C"]:
+        return img.clamp(min=self.min, max=self.max)
+
+
 class Alpha(BranchShader):
     def apply(
         self, ctx: RenderContext, img: Float[Tensor, "B H W C"]

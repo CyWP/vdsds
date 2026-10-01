@@ -387,6 +387,126 @@ class ImgUtils:
         return patches
 
     @staticmethod
+    def crop_alpha_bounds(
+        x: Float[Tensor, "B 4 H W"],
+        border: int,
+        keep_aspect: bool = True,
+    ) -> tuple[int, int, int, int]:
+        """Compute crop amounts that surround the alpha non-zero region.
+
+        Sides are cropped so exactly ``border`` pixels of empty (alpha == 0)
+        space remain next to the content on each side, clamped to the image
+        bounds. Sides where content touches the image edge naturally get no
+        extra border. The batch is cropped jointly (bounding box is the
+        union over batch elements).
+
+        Args:
+        - x: RGBA image tensor (B, 4, H, W).
+        - border: Number of empty pixels to leave on each side.
+        - keep_aspect: If True, enlarge the crop rectangle (never shrink)
+          to match the original aspect ratio ``W / H``, keeping the
+          border tight (reached) on at least one axis. Falls back to the
+          plain-bounds crop if the aspect constraints cannot be met.
+
+        Returns:
+        - out: Crop counts (top, bottom, left, right) in pixels.
+        """
+        B, C, H, W = x.shape
+        if C != 4:
+            raise ValueError(f"crop_alpha requires an RGBA image (C=4), got C={C}.")
+        if border < 0:
+            raise ValueError(f"border must be non-negative, got {border}.")
+
+        alpha = x[:, 3] > 0  # (B, H, W)
+        if not alpha.any():
+            return (0, 0, 0, 0)
+
+        rows = alpha.any(dim=2).any(dim=0)  # (H,)
+        cols = alpha.any(dim=1).any(dim=0)  # (W,)
+        row_idx = rows.nonzero(as_tuple=False).flatten()
+        col_idx = cols.nonzero(as_tuple=False).flatten()
+        t0, b0 = int(row_idx[0]), int(row_idx[-1])  # first/last content row
+        l0, r0 = int(col_idx[0]), int(col_idx[-1])  # first/last content col
+
+        t = max(t0 - border, 0)
+        b = min(b0 + border, H - 1)
+        l = max(l0 - border, 0)
+        r = min(r0 + border, W - 1)
+
+        if keep_aspect:
+            aspect = W / H
+            ch, cw = b - t + 1, r - l + 1
+            if cw / ch != aspect:
+                # Enlarge minimally so (cw', ch') has the target aspect,
+                # cw' >= cw and ch' >= ch, while staying inside the image.
+                if aspect > cw / ch:
+                    w2 = min(math.ceil(aspect * ch - 1e-6), W)
+                    h2 = min(math.floor(w2 / aspect + 1e-6), H)
+                else:
+                    h2 = min(math.ceil(cw / aspect - 1e-6), H)
+                    w2 = min(math.floor(h2 * aspect + 1e-6), W)
+                if w2 >= cw and h2 >= ch:
+                    t, b = ImgUtils._expand_axis(t, b, h2, H)
+                    l, r = ImgUtils._expand_axis(l, r, w2, W)
+                # else: keep-aspect impossible within bounds; use plain crop.
+
+        pt, pb, pl, pr = t, H - 1 - b, l, W - 1 - r
+        return (pt, pb, pl, pr)
+
+    @staticmethod
+    def _expand_axis(lo: int, hi: int, size: int, dim: int) -> tuple[int, int]:
+        """Grow a [lo, hi] interval to the given size, centered then clamped.
+
+        Args:
+        - lo: Current first index (inclusive).
+        - hi: Current last index (inclusive).
+        - size: Target interval size (hi - lo + 1).
+        - dim: Total axis size; interval must stay within [0, dim - 1].
+
+        Returns:
+        - out: New (lo, hi).
+        """
+        extra = size - (hi - lo + 1)
+        slack_lo, slack_hi = lo, dim - 1 - hi
+        add_lo = min(extra // 2, slack_lo)
+        add_hi = min(extra - add_lo, slack_hi)
+        add_lo += min(extra - add_lo - add_hi, slack_lo - add_lo)
+        return (lo - add_lo, hi + add_hi)
+
+    @staticmethod
+    def crop_alpha(
+        x: Float[Tensor, "B 4 H W"],
+        border: int,
+        keep_aspect: bool = True,
+        preserve_size: bool = False,
+    ) -> Float[Tensor, "B 4 H_out W_out"]:
+        """Crop empty (alpha == 0) border, leaving `border` pixels of margin.
+
+        Crops each side so only ``border`` pixels of empty space remain
+        closest to the content. Sides where content touches the image edge
+        get no border. Requires an RGBA image. The batch is cropped jointly
+        (bounding box is the union over batch elements).
+
+        Args:
+        - x: RGBA image tensor (B, 4, H, W).
+        - border: Number of empty pixels to leave on each side.
+        - keep_aspect: If True, use the largest aspect-preserving crop that
+           still reaches the border on at least one side.
+        - preserve_size: If True, resize the cropped result back to the
+           original (H, W).
+
+        Returns:
+        - out: Cropped image (B, 4, H_out, W_out); (B, 4, H, W) if
+           ``preserve_size``.
+        """
+        pt, pb, pl, pr = ImgUtils.crop_alpha_bounds(x, border, keep_aspect)
+        _, _, H, W = x.shape
+        y = x[:, :, pt : H - pb, pl : W - pr]  # (B, 4, H_out, W_out)
+        if preserve_size:
+            y = ImgUtils.resize(y, H, W)  # (B, 4, H, W)
+        return y
+
+    @staticmethod
     def coords_pad(
         co: Float[Tensor, "C H W"],
         padding: tuple[int, int, int, int] = (0, 0, 0, 0),
@@ -1854,12 +1974,60 @@ class Splimage:
             raise ValueError(
                 f"Horizontal erode {pl + pr} would consume the entire width {W}."
             )
-        self._tensor = self._tensor[:, :, pt : H - pb, pl : W - pr]
-        self._padding = (
+        self._invalidate()
+        return self
+
+    def crop_alpha(
+        self,
+        border: int,
+        keep_aspect: bool = True,
+        preserve_size: bool = False,
+    ) -> Splimage:
+        """Crop empty (alpha == 0) border. Returns new Splimage.
+
+        Delegates to :meth:`ImgUtils.crop_alpha_bounds`. Content with
+        alpha == 0 is trimmed so exactly ``border`` pixels of empty space
+        remain on each side, clamped to the image bounds. Sides where
+        content touches the image edge get no border. The batch is cropped
+        jointly (bounding box is the union over batch elements). Padding
+        metadata is reduced by the crop amounts.
+
+        Args:
+            border: Number of empty pixels to leave on each side.
+            keep_aspect: If True, use the largest aspect-preserving crop
+                that still reaches the border on at least one side.
+            preserve_size: If True, resize the cropped result back to the
+                original (H, W).
+
+        Returns:
+            New Splimage with the cropped tensor.
+
+        Raises:
+            ValueError: If the underlying tensor is not RGBA.
+        """
+        pt, pb, pl, pr = ImgUtils.crop_alpha_bounds(self._tensor, border, keep_aspect)
+        H, W = self.H, self.W
+        new = Splimage(self._tensor[:, :, pt : H - pb, pl : W - pr])
+        new._padding = (
             max(self._padding[0] - pt, 0),
             max(self._padding[1] - pb, 0),
             max(self._padding[2] - pl, 0),
             max(self._padding[3] - pr, 0),
         )
+        if preserve_size:
+            new._tensor = ImgUtils.resize(new._tensor, H, W)
+            new._invalidate()
+        return new
+
+    def crop_alpha_(
+        self,
+        border: int,
+        keep_aspect: bool = True,
+        preserve_size: bool = False,
+    ) -> Splimage:
+        """crop_alpha in-place."""
+        new = self.crop_alpha(border, keep_aspect, preserve_size)
+        self._tensor = new._tensor
+        self._padding = new._padding
         self._invalidate()
         return self

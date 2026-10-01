@@ -19,7 +19,7 @@ class ObjViewer:
         obj: Model | Deformation,
         camera: Camera | None = None,
         light: LightSource | None = None,
-        sensitivity: float = 60.0,
+        sensitivity: float = 2.0,
         bg_color: list[float] | None = None,
     ):
         self.obj = obj
@@ -99,7 +99,6 @@ class ObjViewer:
         angle = (
             math.sqrt((x / self.camera.W) ** 2 + (y / self.camera.H) ** 2)
             * self.sensitivity
-            * 0.001
         )
         self.camera.rotate_from_image_space(x, y, angle)
 
@@ -109,7 +108,7 @@ class ObjViewer:
             return
         x, y = self.roll_x, self.roll_y
         self.roll_x = self.roll_y = 0
-        angle = x / self.camera.W * self.sensitivity * 0.001
+        angle = x / self.camera.W * self.sensitivity
         self.camera.roll_from_image_space(angle)
 
     def check_translation(self):
@@ -121,7 +120,6 @@ class ObjViewer:
         dist = (
             math.sqrt((x / self.camera.W) ** 2 + (y / self.camera.H) ** 2)
             * self.sensitivity
-            * 0.02
         )
         self.camera.translate_image_space(x, y, dist)
 

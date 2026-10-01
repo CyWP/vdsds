@@ -17,6 +17,7 @@ from .shader import (
     Alpha,
     Antialias,
     BackgroundColor,
+    Clamp,
     Normal,
     Shader,
     SoftLambertShader,
@@ -71,6 +72,7 @@ class Renderer:
                 color=bg_color,
                 apply_to={"render"},
             ),
+            Clamp(apply_to={"render"}),
             Antialias(apply_to={"render"}),
         ]
         return Renderer(shaders, device=device, dtype=dtype)

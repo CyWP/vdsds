@@ -7,19 +7,20 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from ..rendering import Camera, LightSource, Renderer
+from ..rendering import Camera, CameraCoordinates, LightSource, Renderer
 from ..rendering.shader import (
     Albedo,
     Alpha,
     Antialias,
     BackgroundColor,
+    Clamp,
     LambdaShader,
     Normal,
     SoftLambertShader,
 )
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..utils.img import Splimage
+from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
@@ -38,7 +39,7 @@ class TrainModelSDS(ViewableScript):
         },
         "optim": {
             "epochs": 400,
-            "lr": 0.02,
+            "lr": 0.0125,
             "accum_steps": 2,
             "seed": 42,
         },
@@ -50,13 +51,15 @@ class TrainModelSDS(ViewableScript):
             "guidance_scale": 7.5,
         },
         "prompt": {
-            "text": ["Cute cartoon giraffe", "Cute cartoon rhinoceros"],
-            "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            # "text": ["Rhinoceros", "Dog"],
+            # "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            "text": ["Giraffe"],
+            "anchors": [[1.0, 0.0, 0.0]],
             "overlap": 3.0,
         },
         "loss": {
             "diffusion": 1.0,
-            "jacobian": 50.0,
+            "jacobian": 500.0,
             "laplacian": 0.0,
         },
         "model": {"name": "mesh"},
@@ -64,19 +67,21 @@ class TrainModelSDS(ViewableScript):
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 8,
             "init": "random",  # Options: 'fibonacci', 'random'
-            "overlap": 0.8,
+            "overlap": 3.0,
             "normalize": False,
         },
         "camera": {
             "H": 512,
             "W": 512,
             "views": 8,
+            "view_source": "orbit",  # Options: 'random', 'orbit'abs
+            "elevation_range": math.pi / 6,  # Only used for 'orbit' mode
             "point_upwards": True,
             "radius": 1.5,
             "bg_color": [0.2, 0.7, 0.0],  # Options: 'random' or provide color.
             "aug_views": 2,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
-            "jitter_sigma": math.pi / 6,
+            "jitter_range": math.pi / 4,
         },
         "shader": {
             "down_H": 224,
@@ -113,11 +118,6 @@ class TrainModelSDS(ViewableScript):
             optimizer.zero_grad()
             cameras = self.camera_batch()
             for _ in range(config.optim.accum_steps):
-                # loss = (
-                #     df.SDS(tgt_renders, text_embeds, controller=None)["loss_sds"]
-                #     / accum_steps
-                #     * config.loss.diffusion
-                # )
                 loss = (
                     self.diffusion_loss(
                         cameras, df, text_embeds, prompt_basis, len(prompts)
@@ -189,7 +189,7 @@ class TrainModelSDS(ViewableScript):
                 )
                 attn_alphas = alpha_basis._norm_basis(deltas)
             assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
-                f"render batch {renders.shape[0]} × {num_prompts + 1} branches "
+                f"render batch {renders.shape[0]} x {num_prompts + 1} branches "
                 f"!= embed rows {text_embeds.shape[0]}"
             )
             rt = df.ActvnReplace(
@@ -216,38 +216,52 @@ class TrainModelSDS(ViewableScript):
 
     def random_cam(self) -> Camera:
         cfg = self.config.camera
-        return Camera.random_rot(
-            H=cfg.H,
-            W=cfg.W,
-            radius=cfg.radius,
-            point_upwards=cfg.point_upwards,
-        ).to(self.device)
+        if cfg.view_source == "random":
+            return Camera.random_rot(
+                H=cfg.H,
+                W=cfg.W,
+                radius=cfg.radius,
+                point_upwards=cfg.point_upwards,
+            ).to(self.device)
+        elif cfg.view_source == "orbit":
+            angle = torch.rand((), device=self.device) * 2 * torch.pi
+            Q_orbit = Quaternion.from_axis_angle(
+                CameraCoordinates._up.to(self.device), angle
+            ).to(self.device)
+            cam = Camera(
+                H=cfg.H, W=cfg.W, co=CameraCoordinates(radius=cfg.radius, Q=Q_orbit)
+            ).to(self.device)
+            e_angle = (torch.rand((), device=self.device) * 2 - 1) * cfg.elevation_range
+            cam.rotate_from_image_space(dx=0, dy=1.0, deg=e_angle)
+            return cam
 
-    def jitter_cam(self, camera: Camera, sigma: float, point_upwards: bool) -> Camera:
+    def jitter_cam(self, camera: Camera) -> Camera:
+        cfg = self.config.camera
         cam = camera.copy()
         device = cam.device
-        axis = torch.rand((3,), device=device) - 0.5
-        axis /= axis.norm().clamp(min=1e-8)
-        angle = torch.randn((), device=device) * sigma
-        Q_rot = Quaternion.from_axis_angle(axis, angle).to(device)
-        cam.co.Q *= Q_rot
-        if point_upwards:
-            cam = cam.point_upwards()
+        angle_range = torch.pi if cfg.aug_type == "random" else cfg.jitter_range
+        angle = (torch.rand((), device=device) * 2 - 1) * angle_range
+        if cfg.view_source == "random":
+            axis = torch.rand((3,), device=device) - 0.5
+            axis /= axis.norm().clamp(min=1e-8)
+            Q_rot = Quaternion.from_axis_angle(axis, angle).to(device)
+            cam.co.Q *= Q_rot
+            if cfg.point_upwards:
+                cam = cam.point_upwards()
+        elif cfg.view_source == "orbit":
+            axis = cam.co._up.to(cam.device)
+            Q_rot = Quaternion.from_axis_angle(axis, angle).to(device)
+            cam.co.Q *= Q_rot
         return cam
 
     def camera_batch(self) -> list[tuple[Camera, Camera]]:
         cfg = self.config.camera
-        random_aug = cfg.aug_type == "random"
         base_cams = [self.random_cam() for _ in range(cfg.views)]
         cameras = []
         for cam in base_cams:
             cameras.append((cam, cam))
             for _ in range(cfg.aug_views):
-                view_cam = (
-                    self.random_cam()
-                    if random_aug
-                    else self.jitter_cam(cam, cfg.jitter_sigma, cfg.point_upwards)
-                )
+                view_cam = self.jitter_cam(cam)
                 cameras.append((view_cam, cam))
         return cameras
 
@@ -355,10 +369,20 @@ class TrainModelSDS(ViewableScript):
             Normal(),
             SoftLambertShader(apply_to={"render"}),
             Alpha(apply_to={"render"}),
+            LambdaShader(
+                lambda ctx, i: ImgUtils.crop_alpha(
+                    i.permute(0, 3, 1, 2),
+                    border=16,
+                    keep_aspect=True,
+                    preserve_size=True,
+                ).permute(0, 2, 3, 1),
+                apply_to={"render"},
+            ),
             BackgroundColor(
                 color=torch.tensor(cfg.camera.bg_color, device=self.device),
                 apply_to={"render"},
             ),
+            Clamp(apply_to={"render"}),
             Antialias(apply_to={"render"}),
             LambdaShader(
                 lambda ctx, i: resize(

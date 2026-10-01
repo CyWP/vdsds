@@ -222,14 +222,16 @@ class Camera:
             origin=vec.clone(), Q=Quaternion.identity(self.device)
         )
 
-    def rotate_from_image_space(self, dx: int, dy: int, deg: float):
+    def rotate_from_image_space(
+        self, dx: int, dy: int, deg: float
+    ):  # Change deg to rad, as it is computed in rads
         """
         Rotate the camera around its own origin based on image-space motion and a rotation angle.
         """
         R = self.R
         # Compute rotation axis in world space
         axis = -dx * R[1, :] + dy * R[0, :]
-        angle = torch.tensor(RAD2DEG * deg, device=axis.device)
+        angle = torch.tensor(deg, device=axis.device)
         self.co.Q *= Quaternion.from_axis_angle(axis, angle)
 
     def roll_from_image_space(self, deg: float):
@@ -237,7 +239,7 @@ class Camera:
         Rotate the camera on its forward axis.
         """
         axis = self.R[2, :]
-        angle = torch.tensor(RAD2DEG * deg, device=axis.device)
+        angle = torch.tensor(deg, device=axis.device)
         rotation = Quaternion.from_axis_angle(axis, angle)
         self.co.Q *= rotation
 
