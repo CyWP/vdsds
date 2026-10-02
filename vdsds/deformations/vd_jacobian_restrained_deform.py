@@ -98,3 +98,19 @@ class VDRestrainedJacobianDeformation(Deformation):
         out = m.copy()
         out.V = V_new.contiguous()
         return out
+
+    def train(
+        self,
+        model: bool = False,
+        centroids: bool = True,
+        sigmas: bool = True,
+        weights: bool = True,
+        **kwargs,
+    ):
+        super().train(model=model, **kwargs)
+        if not centroids:
+            self.J_deform.centroids.requires_grad_(False)
+        if not sigmas:
+            self.J_deform.log_sigmas.requires_grad_(False)
+        if not weights:
+            self.J_deform.weights.requires_grad_(False)

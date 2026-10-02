@@ -6,7 +6,6 @@ import torch
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from ..rasterizable import Rasterizable
 from ..rendering.camera import Camera
 from ..rendering.light import LightSource
 from ..representations import get_model
@@ -14,7 +13,7 @@ from ..representations.base import Model
 from ..utils.serialization import load_dict, save_dict, to_serializable
 
 
-class Deformation(nn.Module, Rasterizable):
+class Deformation(nn.Module):
     def __init__(self, model: Model):
         super().__init__()
         self.model = model
@@ -140,9 +139,9 @@ class Deformation(nn.Module, Rasterizable):
         self.model.to(device)
         return self
 
-    def train(self, train_model: bool = False):
+    def train(self, model: bool = False, **kwargs):
         self.requires_grad_(True)
-        self.model.requires_grad_(False)
+        self.model.requires_grad_(model)
 
     def copy(self) -> Deformation:
         return self.__class__.from_dict(self.to_dict()).to(self.device)

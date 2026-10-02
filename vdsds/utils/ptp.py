@@ -18,7 +18,6 @@ import numpy as np
 import torch
 from torch import nn
 
-
 # def print_attention(attn, num_imgs, dim, title, count):
 #     img_map = attn[:num_imgs, ...].view(num_imgs, dim, dim)
 #     fig, axs = plt.subplots(1, num_imgs, figsize=(5 * num_imgs, 5))

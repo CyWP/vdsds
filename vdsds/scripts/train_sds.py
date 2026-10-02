@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 from pathlib import Path
 from typing import ClassVar
 
@@ -38,24 +39,28 @@ class TrainModelSDS(ViewableScript):
             "run_dir": None,
         },
         "optim": {
-            "epochs": 400,
-            "lr": 0.0125,
+            "epochs": 500,
+            "lr": 0.005,
             "accum_steps": 2,
             "seed": 42,
+            "train_model": False,
+            "train_centroids": True,
+            "train_sigmas": True,
+            "train_weights": True,
         },
         "diffusion": {
             "loss": "bsd",  # Options: 'sds','bsd'
-            "model_size": "M",  # Options: 'S', 'M', 'L', 'XL'
+            "model_size": "L",  # Options: 'S', 'M', 'L', 'XL'
             "dtype": "float16",
             "cpu_offload": False,
-            "guidance_scale": 7.5,
+            "guidance_scale": 100.0,
         },
         "prompt": {
-            # "text": ["Rhinoceros", "Dog"],
-            # "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
-            "text": ["Giraffe"],
-            "anchors": [[1.0, 0.0, 0.0]],
-            "overlap": 3.0,
+            "text": ["Camel", "Turtle"],
+            "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            # "text": ["Turtle"],
+            # "anchors": [[1.0, 0.0, 0.0]],
+            "overlap": 0.5,
         },
         "loss": {
             "diffusion": 1.0,
@@ -65,31 +70,39 @@ class TrainModelSDS(ViewableScript):
         "model": {"name": "mesh"},
         "deformation": {
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
-            "num_funcs": 8,
-            "init": "random",  # Options: 'fibonacci', 'random'
-            "overlap": 3.0,
+            "num_funcs": 12,
+            "init": "fibonacci",  # Options: 'fibonacci', 'random'
+            "overlap": 1.0,
             "normalize": False,
         },
         "camera": {
             "H": 512,
             "W": 512,
+            "F_min": 40,
+            "F_max": 75,
+            "radius_min": 1.25,
+            "radius_max": 2.5,
             "views": 8,
             "view_source": "orbit",  # Options: 'random', 'orbit'abs
-            "elevation_range": math.pi / 6,  # Only used for 'orbit' mode
+            "elevation_min": 0.0,  # Only used for 'orbit' mode
+            "elevation_max": math.pi / 3,  # Only used for 'orbit' mode
             "point_upwards": True,
-            "radius": 1.5,
-            "bg_color": [0.2, 0.7, 0.0],  # Options: 'random' or provide color.
-            "aug_views": 2,
+            "aug_views": 0,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
             "jitter_range": math.pi / 4,
         },
         "shader": {
-            "down_H": 224,
-            "down_W": 224,
+            "resize": True,
+            "down_H": 64,  # Only used if 'resize' is True
+            "down_W": 64,  # Only used if 'resize' is True
+            "shading_beta": 5.0,
+            "bg_color": [0.2, 0.7, 0.0],  # Options: 'random' or provide color.
+            "crop_fit": True,
+            "crop_border": 16,  # Only used if 'crop_fit' is True
         },
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
-            "jitter_sigma": math.pi / 10,
+            "jitter_sigma": math.pi / 4,
         },
         "post": {
             "orbit": True,
@@ -103,7 +116,12 @@ class TrainModelSDS(ViewableScript):
         config = self.config
         df = DeepFloydGuidance(config.diffusion, device)
         torch.manual_seed(config.optim.seed)
-        self.model.train(train_model=False)
+        self.model.train(
+            model=config.optim.train_model,
+            centroids=config.optim.train_centroids,
+            sigmas=config.optim.train_sigmas,
+            weights=config.optim.train_weights,
+        )
         self.renderer = self.get_renderer()
         accum_steps = config.optim.accum_steps
         prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
@@ -216,11 +234,14 @@ class TrainModelSDS(ViewableScript):
 
     def random_cam(self) -> Camera:
         cfg = self.config.camera
+        radius = random.random() * (cfg.radius_max - cfg.radius_min) + cfg.radius_min
+        F = random.random() * (cfg.F_max - cfg.F_min) + cfg.F_min
         if cfg.view_source == "random":
             return Camera.random_rot(
                 H=cfg.H,
                 W=cfg.W,
-                radius=cfg.radius,
+                F=F,
+                radius=radius,
                 point_upwards=cfg.point_upwards,
             ).to(self.device)
         elif cfg.view_source == "orbit":
@@ -229,9 +250,13 @@ class TrainModelSDS(ViewableScript):
                 CameraCoordinates._up.to(self.device), angle
             ).to(self.device)
             cam = Camera(
-                H=cfg.H, W=cfg.W, co=CameraCoordinates(radius=cfg.radius, Q=Q_orbit)
+                H=cfg.H, W=cfg.W, F=F, co=CameraCoordinates(radius=radius, Q=Q_orbit)
             ).to(self.device)
-            e_angle = (torch.rand((), device=self.device) * 2 - 1) * cfg.elevation_range
+            e_angle = (
+                torch.rand((), device=self.device)
+                * (cfg.elevation_max - cfg.elevation_min)
+                + cfg.elevation_min
+            )
             cam.rotate_from_image_space(dx=0, dy=1.0, deg=e_angle)
             return cam
 
@@ -363,33 +388,41 @@ class TrainModelSDS(ViewableScript):
         return LightSource(origin=origin)
 
     def get_renderer(self) -> Renderer:
-        cfg = self.config
+        cfg = self.config.shader
         shaders = [
             Albedo(),
             Normal(),
-            SoftLambertShader(apply_to={"render"}),
+            SoftLambertShader(apply_to={"render"}, beta=cfg.shading_beta),
             Alpha(apply_to={"render"}),
-            LambdaShader(
-                lambda ctx, i: ImgUtils.crop_alpha(
-                    i.permute(0, 3, 1, 2),
-                    border=16,
-                    keep_aspect=True,
-                    preserve_size=True,
-                ).permute(0, 2, 3, 1),
-                apply_to={"render"},
-            ),
+        ]
+        if cfg.crop_fit:
+            shaders.append(
+                LambdaShader(
+                    lambda ctx, i: ImgUtils.crop_alpha(
+                        i.permute(0, 3, 1, 2),
+                        border=16,
+                        keep_aspect=True,
+                        preserve_size=True,
+                    ).permute(0, 2, 3, 1),
+                    apply_to={"render"},
+                )
+            )
+        shaders += [
             BackgroundColor(
-                color=torch.tensor(cfg.camera.bg_color, device=self.device),
+                color=torch.tensor(cfg.bg_color, device=self.device),
                 apply_to={"render"},
             ),
             Clamp(apply_to={"render"}),
             Antialias(apply_to={"render"}),
-            LambdaShader(
-                lambda ctx, i: resize(
-                    i.permute(0, 3, 1, 2),
-                    out_shape=(cfg.shader.down_H, cfg.shader.down_W),
-                ).permute(0, 2, 3, 1),
-                apply_to={"render"},
-            ),
         ]
+        if cfg.resize:
+            shaders.append(
+                LambdaShader(
+                    lambda ctx, i: resize(
+                        i.permute(0, 3, 1, 2),
+                        out_shape=(cfg.down_H, cfg.down_W),
+                    ).permute(0, 2, 3, 1),
+                    apply_to={"render"},
+                )
+            )
         return Renderer(shaders, self.device)

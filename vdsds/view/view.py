@@ -5,9 +5,10 @@ import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication
 
-from ..rasterizable import Rasterizable
+from ..deformations.base import Deformation
 from ..rendering.camera import Camera
 from ..rendering.light import LightSource
+from ..representations.base import Model
 from ..utils.timer import TimedJob
 from .keymap import KeyHandler
 from .obj_view import ObjViewer
@@ -19,7 +20,7 @@ class View(QApplication):
 
     def __init__(
         self,
-        obj: Rasterizable,
+        obj: Model | Deformation,
         light: LightSource | None = None,
         camera: Camera | None = None,
         fps: int = 24,

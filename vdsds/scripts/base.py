@@ -7,8 +7,9 @@ import torch
 from PySide6.QtCore import QTimer
 
 from ..deformations import get_deformation, load_deformation
-from ..rasterizable import Rasterizable
+from ..deformations.base import Deformation
 from ..representations import get_model
+from ..representations.base import Model
 from ..utils.config import Config
 from ..view import View
 
@@ -50,7 +51,7 @@ class Script:
 
         return config
 
-    def load_model(self) -> Rasterizable:
+    def load_model(self) -> Model | Deformation:
         cfg = self.config
         path = Path(cfg.path.model)
         if path.suffix == ".vd3d":

@@ -7,7 +7,6 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from ..utils.math import RAD2DEG
 from ..utils.quaternion import Quaternion
 from .conventions import FORWARD, UP
 
@@ -288,6 +287,9 @@ class Camera:
     def random_rot(
         H: int = 512,
         W: int = 512,
+        F: int = 60,
+        Zn: float = 0.1,
+        Zf: float = 100.0,
         require_grad: bool = False,
         origin: torch.Tensor | None = None,
         radius: float = 1.0,
@@ -299,6 +301,9 @@ class Camera:
         cam = Camera(
             H=H,
             W=W,
+            F=F,
+            Zn=Zn,
+            Zf=Zf,
             co=CameraCoordinates(origin=origin, Q=Q, radius=radius),
         )
         if point_upwards:
