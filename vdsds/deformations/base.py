@@ -124,7 +124,7 @@ class Deformation(nn.Module):
         return [
             param
             for name, param in self.named_parameters()
-            if not name.startswith("model.") or model_trainable
+            if not name.startswith("model.") or model_trainable and param.requires_grad
         ]
 
     def deformed(self, camera: Camera) -> Model:

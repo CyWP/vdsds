@@ -131,16 +131,14 @@ class SphericalGaussianBasis(nn.Module):
     def _init_centroids(N: int, init: str) -> Float[Tensor, "N 3"]:
         if init == "fibonacci":
             i = torch.arange(N, dtype=torch.float32) + 0.5
-            z = 1 - i / N  # (N,)
+            z = 1 - 2 * i / N  # (N,)
             r = (1 - z * z).clamp(min=0.0).sqrt()
             golden = math.pi * (1 + math.sqrt(5))
             phi = (golden * i) % (2 * math.pi)  # (N,)
             return torch.stack([r * phi.cos(), r * phi.sin(), z], dim=-1)  # (N, 3)
         if init == "random":
-            z = torch.rand(N) * 2 - 1  # (N,)
-            phi = torch.rand(N) * 2 * math.pi
-            r = (1 - z * z).clamp(min=0.0).sqrt()
-            return torch.stack([r * phi.cos(), r * phi.sin(), z], dim=-1)
+            vec = torch.rand((N, 3), dtype=torch.float32) * 2 - 1
+            return vec / vec.norm(dim=1, keepdim=True).clamp(min=1e-8)
         raise ValueError(f"Unknown init: {init}")
 
     @classmethod

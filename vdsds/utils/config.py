@@ -227,7 +227,16 @@ class ConfigParser(argparse.ArgumentParser):
         try:
             return json.loads(value)
         except json.JSONDecodeError:
-            return value
+            pass
+
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered in {"null", "none"}:
+            return None
+        return value
 
     @classmethod
     def _parse_overrides(

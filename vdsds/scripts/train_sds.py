@@ -44,8 +44,8 @@ class TrainModelSDS(ViewableScript):
             "accum_steps": 2,
             "seed": 42,
             "train_model": False,
-            "train_centroids": True,
-            "train_sigmas": True,
+            "train_centroids": False,
+            "train_sigmas": False,
             "train_weights": True,
         },
         "diffusion": {
@@ -71,7 +71,7 @@ class TrainModelSDS(ViewableScript):
         "deformation": {
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 12,
-            "init": "fibonacci",  # Options: 'fibonacci', 'random'
+            "init": "random",  # Options: 'fibonacci', 'random'
             "overlap": 1.0,
             "normalize": False,
         },
@@ -126,7 +126,7 @@ class TrainModelSDS(ViewableScript):
         accum_steps = config.optim.accum_steps
         prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
         optimizer = torch.optim.Adam(
-            [*self.model.parameters()],
+            [*self.model.get_parameters()],
             lr=config.optim.lr,
         )
         for e in range(config.optim.epochs):

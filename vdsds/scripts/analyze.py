@@ -81,7 +81,7 @@ class AnalyzeDeformation(ViewableScript):
             torch.tensor(cfg.model.color_1, device=device),
         )
         mesh = self.model.model
-        u = mesh.centroid - mesh.V
+        u = mesh.V
         u = u / u.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         basis = deformation._basis(u).sum(dim=-1)
         bmin, bmax = basis.min(), basis.max()
