@@ -1,0 +1,42 @@
+window.view:
+- "false"
+window.close_on_finish:
+- "false"
+optim.accum_steps:
+- "1"
+- "2"
+optim.seed:
+- "42"
+optim.train_centroids:
+- "false"
+- "true"
+optim.train_sigmas:
+- "false"
+- "true"
+deformation.name:
+- "vd_full"
+- "vd_restrained"
+prompt.model:
+- "cow_subdiv.glb"
+prompts:
+- "Moose"
+- "Giraffe"
+- "Wolf"
+- "Bulldog"
+- "Pitbull"
+- "Turtle"
+- "Sofa"
+- "Zebra"
+- "Horse"
+- "Bull"
+- "Rhinoceros"
+- "Buffalo"
+- "Fox"
+- "Rabbit"
+- "Sports car"
+- "Pickup Truck"
+- "Robot"
+- "Cow"
+- "Pig"
+- "Frog"
+- "Chicken"

@@ -34,15 +34,18 @@ logger = logging.getLogger(__name__)
 
 class TrainModelSDS(ViewableScript):
     _default_config_overrides: ClassVar[dict[str, any]] = {
-        "window": {"fps": 12},
+        "window": {
+            "fps": 12,
+            "close_on_finish": True,
+        },
         "path": {
             "run_dir": None,
         },
         "optim": {
-            "epochs": 500,
+            "epochs": 400,
             "lr": 0.005,
             "accum_steps": 2,
-            "seed": 42,
+            "seed": None,
             "train_model": False,
             "train_centroids": False,
             "train_sigmas": False,
@@ -56,11 +59,12 @@ class TrainModelSDS(ViewableScript):
             "guidance_scale": 100.0,
         },
         "prompt": {
-            "text": ["Camel", "Turtle"],
+            "text": ["Crocodile", "Moose"],
             "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
             # "text": ["Turtle"],
             # "anchors": [[1.0, 0.0, 0.0]],
             "overlap": 0.5,
+            "basis_proc": "norm",  # Options: 'norm', 'square', 'max'
         },
         "loss": {
             "diffusion": 1.0,
@@ -71,7 +75,7 @@ class TrainModelSDS(ViewableScript):
         "deformation": {
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 12,
-            "init": "random",  # Options: 'fibonacci', 'random'
+            "init": "fibonacci",  # Options: 'fibonacci', 'random'
             "overlap": 1.0,
             "normalize": False,
         },
@@ -188,6 +192,24 @@ class TrainModelSDS(ViewableScript):
         )
         return prompts, text_embeds, basis
 
+    def get_prompt_basis(
+        self, basis_func: SphericalGaussianBasis, deltas: Float[Tensor, "N 3"]
+    ) -> Float[Tensor, "M N"]:
+        cfg = self.config.prompt
+        proc = cfg.basis_proc
+        basis = basis_func._basis(deltas)
+        if proc == "norm":
+            return basis / basis.norm(dim=-1, keepdim=True)
+        elif proc == "square":
+            basis = basis**2
+            return basis / basis.norm(dim=-1, keepdim=True)
+        elif proc == "max":
+            ret = torch.zeros_like(basis)
+            ret[basis.argmax(dim=-1, keepdim=True)] = 1.0
+            return ret
+        else:
+            raise ValueError(f"Basis processign option '{proc}' is invalid.")
+
     def diffusion_loss(
         self,
         cameras: list[tuple[Camera, Camera]],
@@ -205,7 +227,7 @@ class TrainModelSDS(ViewableScript):
                 deltas = self.model.model.centroid - torch.stack(
                     [dc.location for rc, dc in cameras], dim=0
                 )
-                attn_alphas = alpha_basis._norm_basis(deltas)
+                attn_alphas = self.get_prompt_basis(alpha_basis, deltas)
             assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
                 f"render batch {renders.shape[0]} x {num_prompts + 1} branches "
                 f"!= embed rows {text_embeds.shape[0]}"
