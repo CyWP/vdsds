@@ -1,10 +1,11 @@
+log.print:
+- "false"
+log.save:
+- "true"
 window.view:
 - "false"
 window.close_on_finish:
 - "false"
-optim.accum_steps:
-- "1"
-- "2"
 optim.seed:
 - "42"
 optim.train_centroids:
@@ -16,27 +17,40 @@ optim.train_sigmas:
 deformation.name:
 - "vd_full"
 - "vd_restrained"
-prompt.model:
-- "cow_subdiv.glb"
+deformation.overlap:
+- "1.5"
+- "3.0"
+shader.crop_fit:
+- "true"
+- "false"
+prompt.basis_proc:
+- "norm"
+- "max"
 prompts:
 - "Moose"
 - "Giraffe"
-- "Wolf"
-- "Bulldog"
-- "Pitbull"
 - "Turtle"
-- "Sofa"
 - "Zebra"
 - "Horse"
-- "Bull"
-- "Rhinoceros"
-- "Buffalo"
-- "Fox"
 - "Rabbit"
-- "Sports car"
 - "Pickup Truck"
 - "Robot"
-- "Cow"
-- "Pig"
-- "Frog"
 - "Chicken"
+- "Alpaca"
+- "Bear"
+- "Bull"
+- "Bulldog puppy"
+- "Bull terrier"
+- "Camel"
+- "Capybara"
+- "Car"
+- "Couch"
+- "Sofa"
+- "Cow"
+- "Fox"
+- "Hippopotamus"
+- "Lion"
+- "Shark"
+- "Rhinoceros"
+- "Pig"
+- "Wolf"

@@ -46,12 +46,3 @@ class TexturedMesh(Mesh):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TexturedMesh:
         return Model.from_dict(data)
-
-    def raster_albedo(self, rast) -> Float[Tensor, "B H W 4"]:
-        uv_img, _ = dr.interpolate(self.uv_co[None], rast, self.F)
-        return dr.texture(
-            self.texture[:, :3].permute(0, 2, 3, 1).contiguous(),
-            uv_img,
-            filter_mode="linear",
-            boundary_mode="wrap",
-        )

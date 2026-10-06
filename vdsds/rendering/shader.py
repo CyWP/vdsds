@@ -88,7 +88,9 @@ class Alpha(BranchShader):
     ) -> Float[Tensor, "B H W C"]:
         B, H, W, C = img.shape
         if C != 3:
-            raise ValueError("Can only add alpha to image with 3 channels.")
+            raise ValueError(
+                f"Can only add alpha to image with 3 channels. Image shape: {img.shape}."
+            )
         imga = torch.cat([img, torch.ones_like(img[..., 2:])], dim=-1)
         imga = torch.where(ctx.rast[..., 3:4] > 0, imga, torch.zeros_like(imga))
         return imga

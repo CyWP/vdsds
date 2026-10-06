@@ -482,4 +482,5 @@ class Mesh(Model):
             V_center = (V_max + V_min) / 2
             V = (V - V_center) / V_extent.max()
         V = torch.stack([V[:, 1], V[:, 0], -V[:, 2]], dim=1)
-        return cls(V, F)
+        kwargs["texture"] = None
+        return cls(V, F, **kwargs)

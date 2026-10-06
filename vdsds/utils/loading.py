@@ -60,7 +60,7 @@ def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
                             raise FileNotFoundError(
                                 f"Could not find albedo texture file for {path}."
                             )
-                    mtl = Splimage(tex_file)._tensor
+                    mtl = Splimage(tex_file, force_rgba=False)._tensor[:, :3]
 
         except Exception as e:
             raise e
@@ -104,7 +104,9 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         uv_co[:, 1] = 1 - uv_co[:, 1]
         # uv_co = torch.stack([1 - uv_co[:, 1], 1 - uv_co[:, 0]], dim=1)
         uv_idx = F.clone()
-        mtl = Splimage(mesh.visual.material.baseColorTexture)._tensor
+        mtl = Splimage(mesh.visual.material.baseColorTexture, force_rgba=False)._tensor[
+            :, :3
+        ]
     # V[:, 2] *= -1
     V = -torch.stack([V[:, 2], V[:, 0], V[:, 1]], dim=1)
     return {

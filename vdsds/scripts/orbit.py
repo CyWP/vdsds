@@ -59,7 +59,6 @@ class OrbitFrames(ViewableScript):
         self.renderer = self.get_renderer()
         video_path = out_dir / f"{cfg.path.file_name}.mp4"
         write_video(self.orbit_all(), path=video_path)
-        print(f"Orbit video saved in {video_path}.")
 
     def orbit_all(self) -> Iterator[Splimage]:
         device = self.device

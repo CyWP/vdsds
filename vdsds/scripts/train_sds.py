@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 class TrainModelSDS(ViewableScript):
     _default_config_overrides: ClassVar[dict[str, any]] = {
+        "log": {
+            "print": True,
+            "save": True,
+        },
         "window": {
             "fps": 12,
             "close_on_finish": True,
@@ -42,8 +46,8 @@ class TrainModelSDS(ViewableScript):
             "run_dir": None,
         },
         "optim": {
-            "epochs": 400,
-            "lr": 0.005,
+            "epochs": 300,
+            "lr": 0.0075,
             "accum_steps": 2,
             "seed": None,
             "train_model": False,
@@ -119,7 +123,8 @@ class TrainModelSDS(ViewableScript):
         device = self.device
         config = self.config
         df = DeepFloydGuidance(config.diffusion, device)
-        torch.manual_seed(config.optim.seed)
+        if config.optim.seed is not None:
+            torch.manual_seed(config.optim.seed)
         self.model.train(
             model=config.optim.train_model,
             centroids=config.optim.train_centroids,
@@ -313,27 +318,30 @@ class TrainModelSDS(ViewableScript):
         return cameras
 
     def log(self, epoch: int, data: dict[str, any]):
-        if not hasattr(self, "_logs"):
-            self._logs = {}
-        self._logs[str(epoch)] = data
-        printlog = f"[Epoch {epoch}]:\n"
-        for k, v in data.items():
-            printlog += f"\t{k}: {v}\n"
-        print(printlog)
+        cfg = self.config.log
+        if cfg.save:
+            if not hasattr(self, "_logs"):
+                self._logs = {}
+            self._logs[str(epoch)] = data
+        if cfg.print:
+            printlog = f"[Epoch {epoch}]:\n"
+            for k, v in data.items():
+                printlog += f"\t{k}: {v}\n"
+            print(printlog)
 
     def finish(self):
         cfg = self.config
         run_dir = Path(cfg.path.run_dir)
         run_dir.mkdir(exist_ok=True, parents=True)
         deformation_file = run_dir / "deformation.vd3d"
-        logs_file = run_dir / "logs.yaml"
-        config_file = run_dir / "config.yaml"
-        cfg.save(config_file)
-        Config(self._logs).save(logs_file)
         self.model.save(deformation_file)
+        if cfg.log.save and hasattr(self, "_logs"):
+            logs_file = run_dir / "logs.yaml"
+            config_file = run_dir / "config.yaml"
+            cfg.save(config_file)
+            Config(self._logs).save(logs_file)
         bv = cfg.post.check_batch_views
         if bv > 0:
-            print("Saving sample batch renders...")
             batch_dir = run_dir / "batch_test"
             batch_dir.mkdir(exist_ok=True, parents=True)
             for b in range(bv):
@@ -346,7 +354,6 @@ class TrainModelSDS(ViewableScript):
                     Splimage(r).save(batch_dir / f"batch_{(i + b * bv):05}.png")
 
         if cfg.post.orbit:
-            print("Generating orbit video...")
             orbit_cfg = {
                 "model": cfg.model,
                 "path": {
@@ -359,7 +366,6 @@ class TrainModelSDS(ViewableScript):
             orbit_script.run()
             orbit_script.finish()
         if cfg.post.analyze:
-            print("Analyzing deformation...")
             analyze_cfg = {
                 "model": cfg.model,
                 "path": {
