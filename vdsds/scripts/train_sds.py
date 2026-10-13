@@ -102,6 +102,7 @@ class TrainModelSDS(ViewableScript):
             "aug_views": 3,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
             "jitter_range": math.pi / 4,
+            "force_deformation_alignment": True,
         },
         "shader": {
             "resize": True,
@@ -325,11 +326,14 @@ class TrainModelSDS(ViewableScript):
         cfg = self.config.camera
         base_cams = [self.random_cam() for _ in range(cfg.views)]
         cameras = []
+        jittered_views = cfg.aug_views
         for cam in base_cams:
-            cameras.append((cam, cam))
-            for _ in range(cfg.aug_views):
-                view_cam = self.jitter_cam(cam)
-                cameras.append((view_cam, cam))
+            if cfg.force_deformation_alignment:
+                cameras.append((cam, cam))
+            else:
+                jittered_views += 1
+            for _ in range(jittered_views):
+                cameras.append((self.jitter_cam(cam), cam))
         return cameras
 
     def log(self, epoch: int, data: dict[str, any]):
