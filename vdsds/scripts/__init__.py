@@ -9,7 +9,7 @@ from .view_model import ViewModel
 
 
 def get_script(name: str, device: torch.device, config: Config, **kwargs) -> Script:
-    if name == "view":
+    if name == "views":
         return ViewModel(device, config, **kwargs)
     elif name == "train_sds":
         return TrainModelSDS(device, config, **kwargs)

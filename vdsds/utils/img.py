@@ -510,7 +510,7 @@ class ImgUtils:
     def coords_pad(
         co: Float[Tensor, "C H W"],
         padding: tuple[int, int, int, int] = (0, 0, 0, 0),
-    ) -> Float[Tensor, C(H + pad_top + pad_bottom)(W + pad_left + pad_right)]:
+    ) -> Float[Tensor, "C H+pad_top+pad_bottom W+pad_left+pad_right"]:
         pad_top, pad_bottom, pad_left, pad_right = padding
         if padding == (0, 0, 0, 0):
             return co

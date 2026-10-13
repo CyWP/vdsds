@@ -46,8 +46,8 @@ class TrainModelSDS(ViewableScript):
             "run_dir": None,
         },
         "optim": {
-            "epochs": 300,
-            "lr": 0.0075,
+            "epochs": 500,
+            "lr": 0.005,
             "accum_steps": 2,
             "seed": None,
             "train_model": False,
@@ -57,13 +57,13 @@ class TrainModelSDS(ViewableScript):
         },
         "diffusion": {
             "loss": "bsd",  # Options: 'sds','bsd'
-            "model_size": "L",  # Options: 'S', 'M', 'L', 'XL'
+            "model_size": "M",  # Options: 'S', 'M', 'L', 'XL'
             "dtype": "float16",
             "cpu_offload": False,
             "guidance_scale": 100.0,
         },
         "prompt": {
-            "text": ["Crocodile", "Moose"],
+            "text": ["Moose", "Moose"],
             "anchors": [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
             # "text": ["Turtle"],
             # "anchors": [[1.0, 0.0, 0.0]],
@@ -74,6 +74,8 @@ class TrainModelSDS(ViewableScript):
             "diffusion": 1.0,
             "jacobian": 500.0,
             "laplacian": 0.0,
+            "volume": 1000.0,
+            "volume_eval_points": 8,
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -86,16 +88,18 @@ class TrainModelSDS(ViewableScript):
         "camera": {
             "H": 512,
             "W": 512,
+            "Zn": 0.01,
+            "Zf": 50.0,
             "F_min": 40,
             "F_max": 75,
             "radius_min": 1.25,
             "radius_max": 2.5,
-            "views": 8,
+            "views": 6,
             "view_source": "orbit",  # Options: 'random', 'orbit'abs
             "elevation_min": 0.0,  # Only used for 'orbit' mode
             "elevation_max": math.pi / 3,  # Only used for 'orbit' mode
             "point_upwards": True,
-            "aug_views": 0,
+            "aug_views": 3,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
             "jitter_range": math.pi / 4,
         },
@@ -141,30 +145,34 @@ class TrainModelSDS(ViewableScript):
         for e in range(config.optim.epochs):
             if self.abort_requested():
                 break
+            loss_dict = {}
             epoch_loss = 0.0
             optimizer.zero_grad()
             cameras = self.camera_batch()
             for _ in range(config.optim.accum_steps):
-                loss = (
+                reconstruction_loss = (
                     self.diffusion_loss(
                         cameras, df, text_embeds, prompt_basis, len(prompts)
                     )
                     * config.loss.diffusion
                 ) / accum_steps
-                loss.backward()
-                epoch_loss += loss.item()
-            j_loss = self.jacobian_loss() * config.loss.jacobian * accum_steps
-            l_loss = self.laplacian_loss() * config.loss.laplacian * accum_steps
-            (j_loss + l_loss).backward()
+                reconstruction_loss.backward()
+                epoch_loss += reconstruction_loss.item()
+            loss_dict["reconstruction_loss"] = epoch_loss
+            if config.loss.jacobian != 0.0:
+                j_loss = self.jacobian_loss() * config.loss.jacobian * accum_steps
+                j_loss.backward()
+                loss_dict["jacobian_loss"] = j_loss.item()
+            if config.loss.laplacian != 0.0:
+                l_loss = self.laplacian_loss() * config.loss.laplacian * accum_steps
+                l_loss.backard()
+                loss_dict["laplacian_loss"] = l_loss.item()
+            if config.loss.volume != 0.0:
+                v_loss = self.volume_loss() * config.loss.volume * accum_steps
+                v_loss.backward()
+                loss_dict["volume_loss"] = v_loss.item()
             optimizer.step()
-            self.log(
-                e,
-                {
-                    "reconstruction_loss": epoch_loss,
-                    "jacobian_loss": j_loss.item(),
-                    "laplacian_loss": l_loss.item(),
-                },
-            )
+            self.log(e, loss_dict)
 
     def get_text_embeds(
         self, df: DeepFloydGuidance
@@ -268,6 +276,8 @@ class TrainModelSDS(ViewableScript):
                 H=cfg.H,
                 W=cfg.W,
                 F=F,
+                Zn=cfg.Zn,
+                Zf=cfg.Zf,
                 radius=radius,
                 point_upwards=cfg.point_upwards,
             ).to(self.device)
@@ -277,7 +287,12 @@ class TrainModelSDS(ViewableScript):
                 CameraCoordinates._up.to(self.device), angle
             ).to(self.device)
             cam = Camera(
-                H=cfg.H, W=cfg.W, F=F, co=CameraCoordinates(radius=radius, Q=Q_orbit)
+                H=cfg.H,
+                W=cfg.W,
+                F=F,
+                Zn=cfg.Zn,
+                Zf=cfg.Zf,
+                co=CameraCoordinates(radius=radius, Q=Q_orbit),
             ).to(self.device)
             e_angle = (
                 torch.rand((), device=self.device)
@@ -382,6 +397,14 @@ class TrainModelSDS(ViewableScript):
         if hasattr(J_def, "weights"):
             return (self.model.J_deform.weights**2).mean()
         return (self.model.J_deform**2).mean()
+
+    def volume_loss(self) -> Float[Tensor, ""]:
+        cams = [
+            Camera.random_rot().to(self.device)
+            for _ in range(self.config.loss.volume_eval_points)
+        ]
+        new_vols = torch.stack([self.model.deformed(cam).volume for cam in cams])
+        return ((new_vols - self.model.model.volume[None]) ** 2).mean()
 
     def laplacian_loss(self) -> torch.Tensor:
         J = torch.einsum("bfij,cfjk->bfik", self.model.jacobians_3d(), self.model.J_src)
