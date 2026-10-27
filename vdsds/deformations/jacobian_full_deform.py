@@ -58,6 +58,23 @@ class FullJacobianDeformation(Deformation):
             + torch.eye(3, device=self.J_deform.device, dtype=self.J_deform.dtype)[None]
         )[None]
 
+    def delta_jacobians(
+        self, deltas: Float[Tensor, "M 3"]
+    ) -> Float[Tensor, "M F 3 3"]:
+        """Deformation jacobians evaluated at multiple view directions.
+
+        The deformation is view-independent, so every view shares the same
+        jacobians.
+
+        Args:
+            deltas: View directions (mesh centroid minus camera location),
+                (M, 3). Unused, kept for interface consistency.
+
+        Returns:
+            out: Per-view deformation jacobians (M, F, 3, 3).
+        """
+        return self.J_deform[None].expand(deltas.shape[0], -1, -1, -1)
+
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.
 

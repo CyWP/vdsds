@@ -1,0 +1,25 @@
+log.print:
+- "false"
+log.save:
+- "true"
+window.view:
+- "false"
+window.close_on_finish:
+- "false"
+optim.seed:
+- "42"
+optim.lr:
+- "0.005"
+optim.epochs:
+- "1500"
+deformation.name:
+- "vd_full"
+- "full"
+prompts:
+- "Moose"
+- "Wolf"
+- "Cow"
+- "Rabbit"
+- "Moose with huge antlers"
+- "Rabbit with huge ears"
+- "Dog"

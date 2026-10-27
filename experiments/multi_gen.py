@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Continually run randomized vdsds training experiments.
 
-Each experiment samples one value per key from ``multi_gen.yaml`` and launches
-``python -m vdsds`` in a fresh subprocess with those overrides. The only
-exception is the ``prompts`` key: exactly 2 prompts are sampled and passed via
-``--prompt.text "[prompt1, prompt2]"``.
+Each experiment samples one value per key from the ``--overrides`` YAML file
+(one value per key, ``python -m vdsds`` is launched in a fresh subprocess with
+those overrides). The only exception is the ``prompts`` key: exactly 2 prompts
+are sampled and passed via ``--prompt.text "[prompt1, prompt2]"``.
 
 Each run writes its outputs to ``<run_dir>/<Prompt1_Prompt2>``, where spaces
 and punctuation in the prompts are replaced by underscores. If the same
@@ -25,7 +25,6 @@ from pathlib import Path
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_OVERRIDES_FILE = SCRIPT_DIR / "multi_gen.yaml"
 
 # Where the vdsds package lives (not an installed package).
 REPO_ROOT = SCRIPT_DIR.parent
@@ -42,9 +41,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run_dir",
-        nargs="?",
         type=Path,
-        default=Path("multi_gen_runs"),
+        required=True,
         help="Directory under which per-experiment subfolders are created.",
     )
     parser.add_argument(
@@ -57,12 +55,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--models_dir",
         type=Path,
+        required=True,
         help="Directory of candidate .glb models; one is sampled per run.",
     )
     parser.add_argument(
         "--overrides",
         type=Path,
-        default=DEFAULT_OVERRIDES_FILE,
+        required=True,
         help="YAML file mapping override keys to lists of candidate values.",
     )
     parser.add_argument(
@@ -74,6 +73,25 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default="cuda:0",
         help="Torch device for vdsds (default: cuda:0).",
+    )
+    parser.add_argument(
+        "--duplicate_prompts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow the same prompt to be sampled twice (default: true); "
+        "pass --no-duplicate_prompts to force two distinct prompts.",
+    )
+    parser.add_argument(
+        "--force_duplicate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Always sample a single prompt and duplicate it in both prompt "
+        "slots (default: false). Takes precedence over --duplicate_prompts.",
+    )
+    parser.add_argument(
+        "--model_pattern",
+        default="*.glb",
+        help="Glob pattern for candidate models inside --models_dir (default: *.glb).",
     )
     parser.add_argument(
         "--dry_run",
@@ -89,11 +107,17 @@ def slugify(prompt: str) -> str:
     return slug or "prompt"
 
 
-def sample_overrides(overrides: dict[str, list]) -> dict[str, str]:
+def sample_overrides(
+    overrides: dict[str, list],
+    allow_duplicates: bool = True,
+    force_duplicate: bool = False,
+) -> dict[str, str]:
     """Randomly pick a value for each override key.
 
-    The ``prompts`` key is the exception: exactly 2 distinct prompts are
-    sampled and combined under the ``--prompt.text`` override.
+    The ``prompts`` key is the exception: exactly 2 prompts are sampled and
+    combined under the ``--prompt.text`` override. ``force_duplicate`` picks a
+    single prompt and repeats it; otherwise ``allow_duplicates`` decides
+    whether the two prompts may be the same one.
     """
     sampled = {}
     for key, values in overrides.items():
@@ -101,7 +125,13 @@ def sample_overrides(overrides: dict[str, list]) -> dict[str, str]:
             continue
         sampled[key] = str(random.choice(values))
 
-    prompt1, prompt2 = random.sample(overrides[PROMPTS_KEY], 2)
+    pool = overrides[PROMPTS_KEY]
+    if force_duplicate:
+        prompt1 = prompt2 = random.choice(pool)
+    elif allow_duplicates:
+        prompt1, prompt2 = random.choice(pool), random.choice(pool)
+    else:
+        prompt1, prompt2 = random.sample(pool, 2)
     sampled[PROMPT_OVERRIDE_KEY] = f'["{prompt1}", "{prompt2}"]'
     return sampled
 
@@ -147,11 +177,15 @@ def main() -> None:
     seen: dict[str, int] = {}
 
     for i in range(args.num_runs):
-        sampled = sample_overrides(overrides)
+        sampled = sample_overrides(
+            overrides,
+            allow_duplicates=args.duplicate_prompts,
+            force_duplicate=args.force_duplicate,
+        )
         run_name = slugify_run_name(run_dir, sampled, seen)
 
         run_path = run_dir / run_name
-        model_path = sample_model(args.models_dir)
+        model_path = sample_model(args.models_dir, args.model_pattern)
         command = build_command(
             sampled, args.task, run_path, model_path, args.device
         )
@@ -171,11 +205,11 @@ def main() -> None:
 
 
 
-def sample_model(models_dir: Path) -> Path:
-    """Randomly choose one of the .glb files in ``models_dir``."""
-    models = sorted(models_dir.glob("*.glb"))
+def sample_model(models_dir: Path, pattern: str) -> Path:
+    """Randomly choose one of the candidate model files in ``models_dir``."""
+    models = sorted(models_dir.glob(pattern))
     if not models:
-        raise FileNotFoundError(f"No .glb files found in '{models_dir}'.")
+        raise FileNotFoundError(f"No '{pattern}' files found in '{models_dir}'.")
     return random.choice(models)
 
 

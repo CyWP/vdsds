@@ -89,3 +89,7 @@ build/
 dist/
 *.egg-info/
 *.egg
+# Run artifacts
+outputs/
+experiments/multi_gen_runs/
+meshup-replica/

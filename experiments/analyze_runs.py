@@ -70,6 +70,15 @@ def parse_args() -> argparse.Namespace:
         help="Config filename inside each run folder (default: config.yaml).",
     )
     parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Parameter to exclude from the analysis: an exact dotted key"
+        " or a key prefix ending in a dot (e.g. path. to drop all path.*"
+        " parameters). Repeatable.",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=None,
@@ -177,13 +186,25 @@ def flatten(prefix: str, value: Any, out: dict[str, str]) -> None:
 
 
 def load_runs(
-    folders: list[Path], config_name: str
+    folders: list[Path],
+    config_name: str,
+    ignore: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Load flattened configs of every run subfolder of the given folders.
 
-    Returns the list of flattened configs and the number of skipped subfolders
-    (no config file found).
+    Parameters matching an entry of ``ignore`` (exact dotted key, or prefix
+    when the entry ends with a dot) are removed. Returns the list of
+    flattened configs and the number of skipped subfolders (no config file
+    found).
     """
+    ignore = ignore or []
+
+    def ignored(key: str) -> bool:
+        return any(
+            key == spec or (spec.endswith(".") and key.startswith(spec))
+            for spec in ignore
+        )
+
     configs: list[dict[str, str]] = []
     skipped = 0
     for folder in folders:
@@ -196,7 +217,7 @@ def load_runs(
                 data = yaml.safe_load(f) or {}
             flat: dict[str, str] = {}
             flatten("", data, flat)
-            configs.append(flat)
+            configs.append({k: v for k, v in flat.items() if not ignored(k)})
     return configs, skipped
 
 
@@ -452,8 +473,8 @@ def run_gb(
     groups: dict[str, list[Path]], args: argparse.Namespace, warnings: list[str]
 ) -> str | None:
     """Good/bad binary analysis; warn-and-skip if it cannot run."""
-    good, sk_good = load_runs(groups["good"], args.config_name)
-    bad, sk_bad = load_runs(groups["bad"], args.config_name)
+    good, sk_good = load_runs(groups["good"], args.config_name, args.ignore)
+    bad, sk_bad = load_runs(groups["bad"], args.config_name, args.ignore)
     if sk_good:
         warnings.append(f"{sk_good} run folder(s) under good/ had no config.")
     if sk_bad:
@@ -477,7 +498,7 @@ def run_rank(
     ranked: list[tuple[int, dict[str, str]]] = []
     skipped = 0
     for folder in sorted(groups["rank"], key=lambda p: int(p.name)):
-        configs, sk = load_runs([folder], args.config_name)
+        configs, sk = load_runs([folder], args.config_name, args.ignore)
         skipped += sk
         ranked.extend((int(folder.name), cfg) for cfg in configs)
     if skipped:
@@ -507,7 +528,7 @@ def run_attrs(
     per_attr: list[tuple[str, list[dict[str, str]]]] = []
     skipped = 0
     for folder in attrs:
-        configs, sk = load_runs([folder], args.config_name)
+        configs, sk = load_runs([folder], args.config_name, args.ignore)
         skipped += sk
         per_attr.append((folder.name, configs))
     if skipped:
