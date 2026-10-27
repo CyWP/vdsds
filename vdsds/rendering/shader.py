@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
@@ -178,6 +179,28 @@ class SoftLambertShader(BranchShader):
             img
             * light.strength
             * F.softplus((ray * normal).sum(dim=-1, keepdim=True), beta=self.beta)
+        )
+
+
+class HardLambertShader(BranchShader):
+    """Hard-clamped Lambertian shading, matching the nvdiffmodeling convention
+    (`kd * clamp(n . normalize(light - x), 0) / pi * light_power`) used by
+    MeshUp's vendored renderutils `bsdf_lambert`. The 1/pi keeps lit surfaces
+    from saturating at the clamp ceiling (kd 0.5, power 5 -> max ~0.80)."""
+
+    def apply(
+        self, ctx: RenderContext, img: Float[Tensor, "B H W C"]
+    ) -> Float[Tensor, "B H W C"]:
+        mesh = ctx.mesh
+        normal = ctx.out.get("normal", attr_map(ctx, mesh.vertex_normals_normalized))
+        pos = attr_map(ctx, mesh.V)
+        light = ctx.light
+        ray = F.normalize(light.origin[None, None, None] - pos, dim=-1)
+        return (
+            img
+            * light.strength
+            * (ray * normal).sum(dim=-1, keepdim=True).clamp(min=0.0)
+            / math.pi
         )
 
 

@@ -9,12 +9,14 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..rendering import Camera, CameraCoordinates, LightSource, Renderer
+from ..rendering.light import cosine_sample_hemisphere
 from ..rendering.shader import (
     Albedo,
     Alpha,
     Antialias,
     BackgroundColor,
     Clamp,
+    HardLambertShader,
     LambdaShader,
     Normal,
     SoftLambertShader,
@@ -100,7 +102,7 @@ class TrainModelSDS(ViewableScript):
             "F_min": 30,
             "F_max": 90,
             "radius_min": 1.25,
-            "radius_max": 2.5,
+            "radius_max": 1.75,
             "views": 8,
             "view_source": "orbit",  # Options: 'random', 'orbit'abs
             "elevation_min": 0.0,  # Only used for 'orbit' mode
@@ -109,16 +111,19 @@ class TrainModelSDS(ViewableScript):
             "aug_views": 0,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
             "jitter_range": math.pi / 2,
+            "adapt_dist": False,  # MeshUp-style per-epoch distance rescale.
             "force_deformation_alignment": False,
         },
         "shader": {
             "resize": True,
             "down_H": 224,  # Only used if 'resize' is True
             "down_W": 224,  # Only used if 'resize' is True
+            "shading": "soft",  # Options: 'soft', 'hard' (nvdiffmodeling-style)
             "shading_beta": 5.0,
             "bg_color": [0.2, 0.7, 0.0],
             "crop_fit": True,
             "crop_border": 16,  # Only used if 'crop_fit' is True
+            "antialias": True,
         },
         "lighting": {
             "alignment": "camera",  # Options: 'camera', 'up'
@@ -136,8 +141,14 @@ class TrainModelSDS(ViewableScript):
         device = self.device
         config = self.config
         df = DeepFloydGuidance(config.diffusion, device)
-        if config.optim.seed is not None:
-            torch.manual_seed(config.optim.seed)
+        seed = config.optim.seed
+        if seed is not None:
+            seed = int(seed)
+            random.seed(seed)
+            torch.manual_seed(seed)
+            torch.backends.cudnn.deterministic = True
+        self._radius_min = config.camera.radius_min
+        self._radius_max = config.camera.radius_max
         self.model.train(
             model=config.optim.train_model,
             centroids=config.optim.train_centroids,
@@ -156,6 +167,8 @@ class TrainModelSDS(ViewableScript):
             if self.abort_requested():
                 break
             optimizer.zero_grad()
+            if config.camera.adapt_dist:
+                self._adapt_dist(e)
             cameras = self.camera_batch()
             loss_dict = self.epoch_update(
                 optimizer, cameras, df, text_embeds, prompt_basis, len(prompts)
@@ -527,7 +540,10 @@ class TrainModelSDS(ViewableScript):
 
     def random_cam(self) -> Camera:
         cfg = self.config.camera
-        radius = random.random() * (cfg.radius_max - cfg.radius_min) + cfg.radius_min
+        radius = (
+            random.random() * (self._radius_max - self._radius_min)
+            + self._radius_min
+        )
         F = random.random() * (cfg.F_max - cfg.F_min) + cfg.F_min
         if cfg.view_source == "random":
             return Camera.random_rot(
@@ -719,6 +735,27 @@ class TrainModelSDS(ViewableScript):
         )
         return (Y**2).mean()
 
+    def _adapt_dist(self, epoch: int):
+        """Rescales the camera radius range to the current mesh bounding box.
+
+        Port of MeshUp's `adapt_dist`: after the first epoch, the camera
+        distance range is multiplied by ``max(|bbox min|, |bbox max|)`` of
+        the currently deformed mesh, so the framing follows the shape as
+        it deforms.
+
+        Args:
+            epoch: Current epoch index (no-op for epoch 0, matching the
+                original behavior).
+        """
+        if epoch == 0:
+            return
+        with torch.no_grad():
+            cam = self.random_cam()
+            V = self.model.deformed(cam).V
+        mult = torch.cat([V.amin(0), V.amax(0)]).abs().amax()
+        self._radius_min = self.config.camera.radius_min * mult
+        self._radius_max = self.config.camera.radius_max * mult
+
     def randomized_light(self, camera: Camera) -> LightSource:
         cfg = self.config.lighting
         align = cfg.alignment
@@ -727,6 +764,16 @@ class TrainModelSDS(ViewableScript):
         strength = torch.tensor(cfg.strength, device=device)
         if align == "camera":
             origin = LightSource.from_camera(camera, strength=strength).origin
+        elif align == "cosine_camera":
+            # MeshUp aug_light: cosine-hemisphere sample around the camera
+            # direction, placed at the camera distance. The camera direction
+            # must be expressed in the rendered-mesh world frame (the same
+            # swizzle/negation from_camera applies to the camera position),
+            # otherwise the light lands on the opposite/behind axis.
+            origin = (
+                cosine_sample_hemisphere(LightSource.from_camera(camera).origin)
+                * camera.location.norm()
+            )
         elif align == "up":
             origin = torch.tensor(LightSource._up, device=device, dtype=torch.float32)
         else:
@@ -742,10 +789,17 @@ class TrainModelSDS(ViewableScript):
 
     def get_renderer(self) -> Renderer:
         cfg = self.config.shader
+        shading = cfg.shading
+        if shading == "soft":
+            lambert = SoftLambertShader(apply_to={"render"}, beta=cfg.shading_beta)
+        elif shading == "hard":
+            lambert = HardLambertShader(apply_to={"render"})
+        else:
+            raise ValueError(f"Shading mode '{shading}' is invalid.")
         shaders = [
             Albedo(),
             Normal(),
-            SoftLambertShader(apply_to={"render"}, beta=cfg.shading_beta),
+            lambert,
             Alpha(apply_to={"render"}),
         ]
         if cfg.crop_fit:
@@ -766,8 +820,9 @@ class TrainModelSDS(ViewableScript):
                 apply_to={"render"},
             ),
             Clamp(apply_to={"render"}),
-            Antialias(apply_to={"render"}),
         ]
+        if cfg.antialias:
+            shaders.append(Antialias(apply_to={"render"}))
         if cfg.resize:
             shaders.append(
                 LambdaShader(

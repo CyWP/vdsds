@@ -10,6 +10,30 @@ from .camera import Camera
 from .conventions import UP
 
 
+def cosine_sample_hemisphere(n: Float[Tensor, 3]) -> Float[Tensor, 3]:
+    """Samples a direction from the cosine-weighted hemisphere around n.
+
+    Port of nvdiffmodeling's ``cosine_sample`` (used by MeshUp's camera
+    augmentation), torch-only so it respects torch's RNG seeding.
+
+    Args:
+        n: Hemisphere axis (any magnitude, normalized internally).
+
+    Returns:
+        out: Unit direction, cosine-distributed about n.
+    """
+    n = n / n.norm().clamp_min(torch.finfo(n.dtype).tiny)
+    dx0 = torch.tensor([0.0, n[2], -n[1]], device=n.device)
+    dx1 = torch.tensor([-n[2], 0.0, n[0]], device=n.device)
+    dx = dx0 if (dx0 * dx0).sum() > (dx1 * dx1).sum() else dx1
+    dx = dx / dx.norm()
+    dy = torch.linalg.cross(n, dx)
+    phi = 2.0 * torch.pi * torch.rand((), device=n.device)
+    s = torch.rand((), device=n.device)
+    sintheta = (1.0 - s).sqrt()
+    return dx * (phi.cos() * sintheta) + dy * (phi.sin() * sintheta) + n * s.sqrt()
+
+
 class LightSource:
     """
     Just a representation of a point light
