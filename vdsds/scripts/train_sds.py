@@ -1,6 +1,7 @@
 import logging
 import math
 import random
+from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
@@ -35,6 +36,38 @@ logger = logging.getLogger(__name__)
 
 
 class TrainModelSDS(ViewableScript):
+    # Shading profiles place the shader/lighting keys that differ between the
+    # legacy renderer setup and the MeshUp-parity renderer setup (see
+    # experiments/meshup_parity.yaml). Profile values only fill leaves that
+    # neither the class defaults nor the user config set, so explicitly
+    # configured values always win. Select 'none' to skip the mechanism
+    # entirely (all profile-managed keys must then come from the config).
+    _shading_profiles: ClassVar[dict[str, dict[str, any]]] = {
+        "legacy": {
+            "shader": {
+                "shading": "soft",
+                "bg_color": [0.2, 0.7, 0.0],
+                "crop_fit": True,
+            },
+            "lighting": {
+                "alignment": "camera",
+                "jitter_sigma": math.pi / 4,
+            },
+        },
+        "meshup": {
+            "shader": {
+                "shading": "hard",
+                "bg_color": [1.0, 1.0, 1.0],
+                "crop_fit": False,
+            },
+            "lighting": {
+                "alignment": "cosine_camera",
+                "jitter_sigma": 0.0,
+            },
+        },
+    }
+    _default_profile: ClassVar[str] = "meshup"  # New (workspace) config.
+
     _default_config_overrides: ClassVar[dict[str, any]] = {
         "log": {
             "print": True,
@@ -118,17 +151,15 @@ class TrainModelSDS(ViewableScript):
             "resize": True,
             "down_H": 224,  # Only used if 'resize' is True
             "down_W": 224,  # Only used if 'resize' is True
-            "shading": "soft",  # Options: 'soft', 'hard' (nvdiffmodeling-style)
             "shading_beta": 5.0,
-            "bg_color": [0.2, 0.7, 0.0],
-            "crop_fit": True,
-            "crop_border": 16,  # Only used if 'crop_fit' is True
+            # 'shading', 'bg_color' and 'crop_fit' are managed by the
+            # shading profiles (see _shading_profiles).
             "antialias": True,
         },
         "lighting": {
-            "alignment": "camera",  # Options: 'camera', 'up'
+            # 'alignment' and 'jitter_sigma' are managed by the shading
+            # profiles (see _shading_profiles).
             "strength": 5.0,
-            "jitter_sigma": math.pi / 4,
         },
         "post": {
             "orbit": True,
@@ -137,9 +168,35 @@ class TrainModelSDS(ViewableScript):
         },
     }
 
+    def _apply_profile(self) -> None:
+        """Applies the shading profile selected by the merged config.
+
+        Fills every profile-managed leaf key that neither the class
+        defaults nor the user config set, so explicitly configured values
+        always win. Runs once at the top of :meth:`run`, before any
+        rendering settings are read; the whole mechanism can be bypassed
+        with 'profile: none'.
+        """
+        name = self.config.pop("profile", None)
+        if name is None:
+            name = self._default_profile
+        if name == "none":
+            return
+        if name not in self._shading_profiles:
+            raise ValueError(f"Shading profile '{name}' is invalid.")
+        self._fill_missing(self.config, self._shading_profiles[name])
+
+    def _fill_missing(self, config: Config, values: dict[str, any]):
+        for key, value in values.items():
+            if key not in config:
+                config[key] = value
+            elif isinstance(value, Mapping):
+                self._fill_missing(config[key], value)
+
     def run(self):
         device = self.device
         config = self.config
+        self._apply_profile()
         df = DeepFloydGuidance(config.diffusion, device)
         seed = config.optim.seed
         if seed is not None:
