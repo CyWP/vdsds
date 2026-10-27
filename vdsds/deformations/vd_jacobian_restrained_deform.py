@@ -19,9 +19,10 @@ class VDRestrainedJacobianDeformation(Deformation):
         self,
         model: Mesh,
         num_funcs: int = 8,
-        centroid_init: str = "fibonacci",
+        init: str = "fibonacci",
         overlap: float = 2.0,
         normalize: bool = True,
+        equi_optim_steps: int | None = None,
         **kwargs,
     ):
         super().__init__(model)
@@ -30,9 +31,10 @@ class VDRestrainedJacobianDeformation(Deformation):
             num_funcs,
             6,
             model.num_F,
-            init=centroid_init,
+            init=init,
             sigma_overlap=overlap,
             normalize=normalize,
+            equi_optim_steps=equi_optim_steps,
         )
         self._cached = False
 
@@ -72,6 +74,25 @@ class VDRestrainedJacobianDeformation(Deformation):
                 self.J_deform.from_cartesian(delta).reshape(1, -1, 3, 2)
             )
         return j3d + torch.eye(3, device=self.device, dtype=j3d.dtype)
+
+    def delta_jacobians(
+        self, deltas: Float[Tensor, "M 3"]
+    ) -> Float[Tensor, "M F 3 3"]:
+        """Deformation jacobians evaluated at multiple view directions.
+
+        Batched version of the ``delta`` branch of :meth:`jacobians_3d`;
+        tangent-space predictions are expanded to full 3D jacobians.
+
+        Args:
+            deltas: View directions (mesh centroid minus camera location),
+                (M, 3).
+
+        Returns:
+            out: Per-view deformation jacobians (M, F, 3, 3).
+        """
+        j3d = self.J_deform.from_cartesian(deltas)  # (F, M, 6)
+        j3d = j3d.reshape(-1, deltas.shape[0], 3, 2).permute(1, 0, 2, 3)
+        return self.poisson.expand_tangent_jacobians(j3d)
 
     def deformed(self, camera: Camera) -> Mesh:
         """Computes the view dependent deformed mesh.

@@ -1,0 +1,87 @@
+# MeshUp-parity training setup: VD-free ("full" deformation), replicating
+# MeshUp's loop.py / base_config.yml semantics.
+#
+# Balance: loss.diffusion 1.0 + loss.composed_jacobian 500.0 == MeshUp's
+# image_weight 100 + regularize_jacobians_weight 50000 (their per-entry
+# mean over the raw jacobian field; the composed reg is exactly that when
+# the deformation is view-independent).
+# optim.step_mode 'meshup' reproduces their stepping: render batch computed
+# once per epoch, backward(retain_graph) + regularizers + optimizer.step()
+# INSIDE the accumulation loop -> 5000 Adam steps @ lr 0.0025 over 2500
+# epochs, including their leftover-gradient/stale-graph behavior.
+log.print: true
+log.save: true
+window.view: false
+window.close_on_finish: true
+
+path.run_dir: ./outputs/meshup_parity
+
+optim.epochs: 2500
+optim.lr: 0.0025
+optim.accum_steps: 2
+optim.step_mode: meshup
+optim.seed: 8888
+optim.train_model: false
+optim.train_centroids: false
+optim.train_sigmas: false
+optim.train_weights: true
+
+diffusion.loss: sds
+diffusion.model_size: XL
+diffusion.dtype: float16
+diffusion.cpu_offload: false
+diffusion.guidance_scale: 100.0
+
+prompt.text: ["Hound dog"]
+
+loss.diffusion: 1.0
+loss.composed_jacobian: 500.0
+loss.jacobian: 0.0
+loss.laplacian: 0.0
+loss.volume: 0.0
+loss.volume_eval_points: 32
+loss.view_dependence: 0.0
+
+model.name: mesh
+
+path.model: ./meshes/hound_uv.obj
+
+deformation.name: full
+
+camera.H: 512
+camera.W: 512
+camera.Zn: 0.01
+camera.Zf: 50.0
+camera.F_min: 30.0
+camera.F_max: 90.0
+# MeshUp renders dist 2.5-3.5 on an extent-2 unit_size mesh; our unit_box
+# mesh has extent 1, so the equivalent distances are halved.
+camera.radius_min: 1.25
+camera.radius_max: 1.75
+camera.views: 8
+camera.view_source: orbit
+camera.elevation_min: 0.0
+camera.elevation_max: 1.0471975511965976   # 60 deg, MeshUp elev_max
+camera.point_upwards: true
+camera.aug_views: 0
+camera.adapt_dist: true
+camera.force_deformation_alignment: true
+
+shader.resize: true
+shader.down_H: 224
+shader.down_W: 224
+shader.shading: hard
+shader.shading_beta: 5.0
+shader.bg_color: [1.0, 1.0, 1.0]
+shader.crop_fit: false
+# MeshUp's render_mesh leaves antialias=True (the nvdiffrast antialias pass
+# runs for every loop.py call).
+shader.antialias: true
+
+lighting.alignment: cosine_camera
+lighting.strength: 5.0
+lighting.jitter_sigma: 0.0
+
+post.orbit: true
+post.check_batch_views: 2
+post.analyze: true

@@ -130,6 +130,21 @@ class Deformation(nn.Module):
     def deformed(self, camera: Camera) -> Model:
         raise NotImplementedError()
 
+    def delta_jacobians(
+        self, deltas: Float[Tensor, "M 3"]
+    ) -> Float[Tensor, "M F 3 3"]:
+        """Deformation jacobians evaluated at multiple view directions.
+
+        Args:
+            deltas: View directions (mesh centroid minus camera location),
+                (M, 3).
+
+        Returns:
+            out: Per-view deformation jacobians (M, F, 3, 3). The composed
+            field is ``J = (I + delta_jacobians) @ J_src``.
+        """
+        raise NotImplementedError()
+
     def rasterize(self, camera: Camera, light: LightSource) -> Float[Tensor, "B 4 H W"]:
         return self.deformed(camera).rasterize(camera, light)
 

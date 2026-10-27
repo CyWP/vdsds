@@ -112,6 +112,7 @@ class DeepFloydGuidance(nn.Module):
         rgb,
         text_embeds,
         rgb_as_latents=False,
+        grad_embeds=False,
         **kwargs,
     ):
         batch_size = rgb.shape[0]
@@ -128,18 +129,26 @@ class DeepFloydGuidance(nn.Module):
             dtype=torch.long,
             device=self.device,
         )
-        # predict the noise residual with unet, NO grad!
-        with torch.no_grad():
-            # add noise
-            noise = torch.randn_like(latents)  # TODO: use torch generator
-            latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            # pred noise
-            latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
+        # add noise
+        noise = torch.randn_like(latents)  # TODO: use torch generator
+        latents_noisy = self.scheduler.add_noise(latents, noise, t)
+        # pred noise
+        latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
+        # predict the noise residual with unet, NO grad! (unless the text
+        # embeddings themselves are being fitted)
+        if grad_embeds:
             noise_pred = self.forward_unet(
                 latent_model_input,
                 torch.cat([t] * 2),
                 text_embeds,
             )  # (B, 6, 64, 64)
+        else:
+            with torch.no_grad():
+                noise_pred = self.forward_unet(
+                    latent_model_input,
+                    torch.cat([t] * 2),
+                    text_embeds,
+                )  # (B, 6, 64, 64)
         noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
         noise_pred_text, predicted_variance = noise_pred_text.split(3, dim=1)
         noise_pred_uncond, _ = noise_pred_uncond.split(3, dim=1)
@@ -149,7 +158,9 @@ class DeepFloydGuidance(nn.Module):
         w = (1 - self.alphas[t]).view(-1, 1, 1, 1)
         grad = w * (noise_pred - noise)
         grad = torch.nan_to_num(grad)
-        target = (latents - grad).detach()
+        # Keep the graph to text_embeds when fitting them (grad_embeds);
+        # otherwise detach so only the latents/rgb receive gradients.
+        target = latents - grad if grad_embeds else (latents - grad).detach()
         # d(loss)/d(latents) = latents - target = latents - (latents - grad) = grad
         loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
         return {

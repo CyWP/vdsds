@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import math
 
 import torch
 from jaxtyping import Float
 from torch import Tensor, nn
+
+logger = logging.getLogger(__name__)
 
 
 class SphericalGaussianBasis(nn.Module):
@@ -69,6 +72,7 @@ class SphericalGaussianBasis(nn.Module):
         sigma_overlap: float = 2.0,
         normalize: bool = False,
         batched_basis: bool = False,
+        equi_optim_steps: int | None = None,
     ):
         """
         Args:
@@ -91,6 +95,12 @@ class SphericalGaussianBasis(nn.Module):
                 unity / weighted-average interpolation).
             batched_basis: If True, keep a batch dimension on centroids and
                 log widths — one full function set per batch element.
+            equi_optim_steps: Optional int. If set AND centroids are
+                initialized internally (explicitly provided centroids are
+                never moved), the centroid directions undergo a gradient
+                optimization (:meth:`_optimize_equidistance`) for this many
+                steps, pushing them toward equally dispersed positions on
+                the sphere (see :meth:`_distance_distribution_loss`).
         """
         super().__init__()
         self.num_funcs = num_funcs
@@ -100,6 +110,7 @@ class SphericalGaussianBasis(nn.Module):
         self.batched_basis = batched_basis
         self._geom_batch = (batch_size,) if batched_basis else ()
 
+        explicit_centroids = centroids is not None
         if centroids is not None:
             assert centroids.shape == self._geom_batch + (num_funcs, 3)
         else:
@@ -126,6 +137,90 @@ class SphericalGaussianBasis(nn.Module):
         else:
             weights = torch.zeros(batch_size, num_funcs, num_dims)
         self.weights = nn.Parameter(weights)
+
+        if not explicit_centroids and equi_optim_steps is not None:
+            self._optimize_equidistance(equi_optim_steps)
+
+    @staticmethod
+    def _distance_distribution_loss(m: Float[Tensor, "B N 3"]) -> Float[Tensor, ""]:
+        """Loss pushing centroid directions toward equal pairwise spacing.
+
+        Squared deviation of pairwise chord distances from their mean,
+        normalized by the squared mean distance (scale-free). Zero only in
+        degenerate cases; minimizing it disperses the directions evenly.
+
+        Accepts (N, 3) or (B, N, 3) input; for a batched input the loss is
+        averaged over the batch. The loss has a nonzero lower bound for
+        N > 4 (all pairwise chords of D > 3 points on a sphere cannot be
+        equal), growing with N (roughly 6e-2 at N=12, 1.1e-1 at N=50).
+
+        Args:
+            m: Unit direction vectors, (N, 3) or (B, N, 3).
+
+        Returns:
+            out: Scalar loss.
+        """
+        assert m.ndim in (2, 3) and m.shape[-1] == 3, (
+            f"Expected (N, 3) or (B, N, 3) directions, got {tuple(m.shape)}"
+        )
+        if m.shape[-2] < 2:
+            return torch.zeros((), dtype=m.dtype, device=m.device)
+        sq_d = (m[..., :, None, :] - m[..., None, :, :]).pow(2).sum(dim=-1)
+        d = sq_d.clamp_min(1e-24).sqrt()  # (N, N) or (B, N, N) chord distances
+        N = m.shape[-2]
+        off_diagonal = ~torch.eye(N, dtype=torch.bool, device=m.device)
+        d = d[..., off_diagonal]
+        mu = d.mean(-1, keepdim=True)
+        loss = ((d - mu) ** 2).mean(-1) / mu.pow(2).clamp_min(1e-8)
+        return loss.mean()
+
+    def _optimize_equidistance(
+        self,
+        steps: int,
+        lr: float = 3e-2,
+    ) -> None:
+        """Gradient-optimizes centroids for (near-)equal pairwise spacing.
+
+        Works on detached leaf copies projected to the unit sphere,
+        minimizing :meth:`_distance_distribution_loss` for `steps` Adam
+        steps. Replaces the centroids parameter with the optimized,
+        unit-normalized directions; for ``batched_basis`` one shared
+        geometry is optimized and expanded across the batch. No early
+        stopping: the loss lower bound depends on `num_funcs` (see
+        `_distance_distribution_loss`), so a step count is the only
+        meaningful run-length control.
+
+        Args:
+            steps: Number of optimization steps.
+            lr: Adam learning rate for the optimization.
+        """
+        start = self.centroids[0] if self.batched_basis else self.centroids
+        if start.shape[0] < 2:
+            return  # nothing to disperse: the loss is constantly 0
+        centroids = start.detach().clone().requires_grad_(True)
+        optimizer = torch.optim.Adam([centroids], lr=lr)
+
+        for _ in range(steps):
+            loss = self._distance_distribution_loss(
+                centroids / centroids.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            )
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        final_axis_dirs = centroids.detach()
+        final_axis_dirs = final_axis_dirs / final_axis_dirs.norm(
+            dim=-1, keepdim=True
+        ).clamp_min(1e-8)
+        if self.batched_basis:
+            final_axis_dirs = (
+                final_axis_dirs[None].expand(self.batch_size, -1, -1).clone()
+            )
+        self.centroids = nn.Parameter(final_axis_dirs)
+        logger.info(
+            "Centroid equidistance optimization: loss "
+            f"{loss.item():.3e} after {steps} steps."
+        )
 
     @staticmethod
     def _init_centroids(N: int, init: str) -> Float[Tensor, "N 3"]:
@@ -324,7 +419,7 @@ class SphericalGaussianBasis(nn.Module):
             out: Interpolated values (B, M, D).
         """
         basis = (
-            self._basis(u) if self.normalize else self._norm_basis(u)
+            self._norm_basis(u) if self.normalize else self._basis(u)
         )  # (M, N) or (B, M, N)
         if basis.ndim == 2:
             out = torch.einsum(
