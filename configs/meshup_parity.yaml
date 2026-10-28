@@ -27,7 +27,7 @@ optim.train_sigmas: false
 optim.train_weights: true
 
 diffusion.loss: sds
-diffusion.model_size: XL
+diffusion.model_size: L
 diffusion.dtype: float16
 diffusion.cpu_offload: false
 diffusion.guidance_scale: 100.0

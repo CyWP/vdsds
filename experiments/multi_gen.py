@@ -3,8 +3,9 @@
 
 Each experiment samples one value per key from the ``--overrides`` YAML file
 (one value per key, ``python -m vdsds`` is launched in a fresh subprocess with
-those overrides). The only exception is the ``prompts`` key: exactly 2 prompts
-are sampled and passed via ``--prompt.text "[prompt1, prompt2]"``.
+those overrides). Two exceptions: the ``config`` key (one value forwarded as
+the ``--config`` base config) and the ``prompts`` key: ``--num_prompts``
+prompts (default 2) are sampled and passed via ``--prompt.text``.
 
 Each run writes its outputs to ``<run_dir>/<Prompt1_Prompt2>``, where spaces
 and punctuation in the prompts are replaced by underscores. If the same
@@ -29,8 +30,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Where the vdsds package lives (not an installed package).
 REPO_ROOT = SCRIPT_DIR.parent
 
-# YAML key holding the prompt pool; sampled as a 2-prompt pair instead of a
-# single value, and surfaced as the ``--prompt.text`` override.
+# YAML key holding the prompt pool; sampled as an ``--num_prompts``-long
+# tuple, and surfaced as the ``--prompt.text`` override.
 PROMPTS_KEY = "prompts"
 PROMPT_OVERRIDE_KEY = "prompt.text"
 
@@ -94,6 +95,14 @@ def parse_args() -> argparse.Namespace:
         help="Glob pattern for candidate models inside --models_dir (default: *.glb).",
     )
     parser.add_argument(
+        "--num_prompts",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="Number of prompts sampled per run (default 2). With 1, the "
+        "override is a 1-element list (1 basis function / 1 anchor).",
+    )
+    parser.add_argument(
         "--dry_run",
         action="store_true",
         help="Print the sampled configurations without running them.",
@@ -111,13 +120,15 @@ def sample_overrides(
     overrides: dict[str, list],
     allow_duplicates: bool = True,
     force_duplicate: bool = False,
+    num_prompts: int = 2,
 ) -> dict[str, str]:
     """Randomly pick a value for each override key.
 
-    The ``prompts`` key is the exception: exactly 2 prompts are sampled and
-    combined under the ``--prompt.text`` override. ``force_duplicate`` picks a
-    single prompt and repeats it; otherwise ``allow_duplicates`` decides
-    whether the two prompts may be the same one.
+    The ``prompts`` key is the exception: ``num_prompts`` prompts are sampled
+    and combined under the ``--prompt.text`` override. ``force_duplicate``
+    picks a single prompt and repeats it as a pair (2-prompt runs only);
+    otherwise the prompt count comes from ``num_prompts`` and
+    ``allow_duplicates`` decides whether the two may be the same one.
     """
     sampled = {}
     for key, values in overrides.items():
@@ -126,13 +137,16 @@ def sample_overrides(
         sampled[key] = str(random.choice(values))
 
     pool = overrides[PROMPTS_KEY]
-    if force_duplicate:
+    if num_prompts == 1:
+        sampled[PROMPT_OVERRIDE_KEY] = f'["{random.choice(pool)}"]'
+    elif force_duplicate:
         prompt1 = prompt2 = random.choice(pool)
     elif allow_duplicates:
         prompt1, prompt2 = random.choice(pool), random.choice(pool)
     else:
         prompt1, prompt2 = random.sample(pool, 2)
-    sampled[PROMPT_OVERRIDE_KEY] = f'["{prompt1}", "{prompt2}"]'
+    if num_prompts != 1:
+        sampled[PROMPT_OVERRIDE_KEY] = f'["{prompt1}", "{prompt2}"]'
     return sampled
 
 
@@ -181,6 +195,7 @@ def main() -> None:
             overrides,
             allow_duplicates=args.duplicate_prompts,
             force_duplicate=args.force_duplicate,
+            num_prompts=args.num_prompts,
         )
         run_name = slugify_run_name(run_dir, sampled, seen)
 

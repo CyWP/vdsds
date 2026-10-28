@@ -1,0 +1,124 @@
+# Experiment generator for MeshUp-style VIEW-DEPENDENT runs.
+#
+# Consumed by experiments/multi_gen.py; each run loads the base config
+# configs/meshup_parity.yaml (MeshUp-parity setup, L model, step_mode
+# 'meshup') and overrides the sampled keys below. Run with --num_prompts 1
+# so the ``prompts`` pool is sampled as a SINGLE prompt (1 basis function,
+# matching the 1 anchors entry; the runner's default 2-prompt sampling
+# would need 2 anchors and double the UNet branches).
+#
+# Everything NOT sampled below is inherited from the parity base: step_mode
+# meshup, lr 0.0025 / 2500 epochs, bsd-style balance via the swept
+# composed_jacobian, hard shading profile, adapt_dist, orbit camera, seed.
+# deviation: the base config's fixed settings are deliberately kept; run
+# dirs go to --run_dir (e.g. experiments/meshup_runs).
+#
+# The two questions this sweep answers:
+#   1. How much view jitter should the deformation cameras get, relative
+#      to their render camera? (camera.jitter_range = max angle; with
+#      camera.aug_views = N each base view gets N extra jittered pairs;
+#      camera.force_deformation_alignment false keeps the always-on pair
+#      (jittered, base) per base view.)
+#   2. How much regularization must fight the view dependence?
+#      (loss.composed_jacobian covers 500-1500 = 1-3x the MeshUp-parity
+#      balance, plus the vd-specific loss.view_dependence.)
+#
+# Usage:
+#   python experiments/multi_gen.py \
+#     --run_dir experiments/meshup_runs \
+#     --models_dir <dir with candidate .glb models> \
+#     --overrides experiments/meshup_gen.yaml \
+#     --num_runs <N> \
+#     --num_prompts 1
+#
+# Analysis: experiments/analyze_runs.py over the run_dir (good/bad folders).
+
+# Base config for every run (MeshUp stepping, hard shading/profile, L model).
+log.print:
+- "false"
+log.save:
+- "true"
+window.view:
+- "false"
+window.close_on_finish:
+- "false"
+config:
+  - "configs/meshup_parity.yaml"
+
+# Fixed: view-dependent deformation with the BSD attention machinery
+# (drop-in swap to "full" here would give the view-independent control).
+deformation.name:
+  - "vd_full"
+diffusion.loss:
+  - "bsd"
+
+post.analyze:
+  - "false"
+
+optim.seed:
+  - "8888"
+  
+optim.lr:
+  - "0.0025"
+  - "0.001"
+  
+optim.epochs:
+  - "1500"
+
+# ---------------- Question 1: view jitter (deformation <-> render cam) ----
+
+# Max angular offset of the deformation camera from its render camera
+# ('jitter' aug type; pi/8, pi/4, pi/2).
+camera.jitter_range:
+  - "0.39269908169872414"
+  - "0.7853981633974483"
+  - "1.5707963267948966"
+  - "2.25"
+
+# Extra jittered deformation pairs per base view. With alignment off, one
+# jittered pair per base view always exists: views=8 renders/epoch with
+# aug_views=0, 16 with aug_views=1 (double VRAM per epoch -- watch the L
+# model budget).
+camera.aug_views:
+  - "0"
+
+# The jittered pair (jittered, base) must not be pinned to the render cam.
+camera.force_deformation_alignment:
+  - "false"
+
+# ---------------- Question 2: regularization vs view dependence ----------
+
+# Identity pull at the rendered view directions; 1x / 2x / 3x the
+# MeshUp-parity balance (loss.diffusion stays 1.0 from the base).
+loss.composed_jacobian:
+  - "500.0"
+  - "1000.0"
+  - "1500.0"
+  - "3000.0"
+
+# vd-specific: per-parameter variance of the deformation weights over the
+# view basis (flattens the jacobian field across view directions). 0.0 = off;
+# 500.0 / 1500.0 to compare against the composed_jacobian axis. Only valid
+# for 'vd_full'/'vd_restrained' (which is what we fixed above).
+loss.view_dependence:
+  - "0.0"
+  - "500.0"
+  - "1500.0"
+  - "3000.0"
+
+# Weight-space jacobian reg (num_funcs-compensated; 12 basis functions):
+# 0.0 keeps the sweep focused on the composed/vd regularizers; 500.0 tests
+# whether the per-weight prior stacks better than the per-entry one.
+loss.jacobian:
+  - "0.0"
+  - "500.0"
+
+# Concept prompt pool (single prompt per run; use --model_pattern to
+# subselect candidate .glb names, e.g. on the sampled animal).
+prompts:
+  - "Moose"
+  - "Rabbit"
+  - "Turtle"
+  - "Rhino"
+  - "Hippo"
+  - "human"
