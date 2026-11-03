@@ -108,6 +108,9 @@ class TrainModelSDS(ViewableScript):
             "negative": None,
             "base": None,  # Base prompt text, e.g. the base object.
             "base_branch_weight": -0.2,  # Blend weight of the base branch.
+            # Extra strings appended to every prompt (e.g. rendering style
+            # qualifiers like '4k', 'realistic', 'unreal engine').
+            "extra": [],
         },
         "loss": {
             "diffusion": 1.0,
@@ -514,14 +517,22 @@ class TrainModelSDS(ViewableScript):
         views = cfg.camera.views
         aug_views = cfg.camera.aug_views
         batch_size = views * (1 + aug_views)
+        # prompt.extra qualifiers are appended verbatim to every prompt.
+        extra = cfg.prompt.extra
+        extra_suffix = (
+            ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
+        )
         if isinstance(txt, list):
-            # MeshUp convention: the last prompt is kept raw (no suffix).
+            # MeshUp convention: the last prompt is kept raw (no rendering
+            # suffix); extras still apply to every prompt.
             prompts = [
-                p + ", a 3d rendering" if i != len(txt) - 1 else p
+                p + ", a 3d rendering" + extra_suffix
+                if i != len(txt) - 1
+                else p + extra_suffix
                 for i, p in enumerate(txt)
             ]
         else:
-            prompts = [txt + ", a 3d rendering"]
+            prompts = [txt + ", a 3d rendering" + extra_suffix]
         if cfg.diffusion.loss == "bsd":
             basis = SphericalGaussianBasis(
                 num_funcs=len(txt),
@@ -535,7 +546,7 @@ class TrainModelSDS(ViewableScript):
             # the empty uncond branch, so branch order matches the basis
             # columns plus the appended base weight.
             if cfg.prompt.base is not None:
-                prompts.append(cfg.prompt.base + ", a 3d rendering")
+                prompts.append(cfg.prompt.base + ", a 3d rendering" + extra_suffix)
             prompts.append("")
         else:
             basis = None
