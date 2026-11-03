@@ -1,0 +1,104 @@
+# Experiment generator for SCHEDULED MeshUp-style view-dependent runs.
+#
+# Consumed by experiments/multi_gen.py; each run inherits the code defaults
+# (validated recipe from the meshup_run_2 analysis: lr 0.0025, 1500 total
+# epochs, loss.jacobian 0, bsd, hard default shading) and overrides the
+# sampled keys below. Launched with --force_duplicate so the prompt pool
+# yields duplicated 1-concept pairs, matching the 0Close recipe (2 prompts
+# / 2 default anchors). Run prompt pairs, NOT single prompts: do not pass
+# --num_prompts 1 for this batch.
+#
+# The new axis is the phase 'schedule': meshup-style large-scale deformation
+# early (meshup step mode + hard shading), then legacy detail stage (accum
+# + soft shading). Presets include split variations (250--1000 first-phase
+# epochs of the 1500 total), a reversed order, and single-phase controls
+# that isolate the step-model contribution and the shading contribution.
+#
+# Usage (launched, see orchestrator log):
+#   python experiments/multi_gen.py \
+#     --run_dir <shared>/VDSDS/meshup_sched \
+#     --models_dir /home/tpesch/shared/3D/models/vdsds \
+#     --model_pattern "*.glb" \
+#     --overrides experiments/schedule_gen.yaml \
+#     --num_runs 64 \
+#     --force_duplicate
+#
+# Analysis: experiments/analyze_runs.py over the run_dir (one relation per
+# schedule preset; the 'schedule' string values are compared atomically).
+
+# Fixed training length (schedule phases sum to this when re-phased).
+optim.epochs:
+  - "1500"
+optim.lr:
+  - "0.0025"
+optim.seed:
+  - "8888"
+
+# ---------------- Schedule axis (the new hypothesis space) ---------------
+# First value = phase-1 epochs; each phase: profile + optim.step_mode.
+# meshup = meshup-style stepping + hard shading; legacy = accum-style
+# detail stage + soft shading.
+schedule:
+  - '[{"epochs": 500, "profile": "meshup", "optim.step_mode": "meshup"}, {"epochs": 1000, "profile": "legacy", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 750, "profile": "meshup", "optim.step_mode": "meshup"}, {"epochs": 750, "profile": "legacy", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 250, "profile": "meshup", "optim.step_mode": "meshup"}, {"epochs": 1250, "profile": "legacy", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 1000, "profile": "meshup", "optim.step_mode": "meshup"}, {"epochs": 500, "profile": "legacy", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 1000, "profile": "legacy", "optim.step_mode": "accum"}, {"epochs": 500, "profile": "meshup", "optim.step_mode": "meshup"}]'
+  - '[{"epochs": 1000, "profile": "meshup", "optim.step_mode": "meshup"}, {"epochs": 500, "profile": "meshup", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 500, "profile": "legacy", "optim.step_mode": "accum"}, {"epochs": 1000, "profile": "meshup", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 1500, "profile": "meshup", "optim.step_mode": "accum"}]'
+  - '[{"epochs": 1500, "profile": "meshup", "optim.step_mode": "meshup"}]'
+  - '[{"epochs": 1500, "profile": "legacy", "optim.step_mode": "accum"}]'
+
+# ---------------- Jitter and regularizer axes (0Close ranges) ------------
+
+# Max angular offset of the deformation camera from its render camera
+# (pi/4 and 2.25 were Close-favored; pi/8 stays out: Crazy-correlated).
+camera.jitter_range:
+  - "0.7853981633974483"
+  - "1.5707963267948966"
+  - "2.25"
+camera.aug_views:
+  - "0"
+camera.force_deformation_alignment:
+  - "false"
+
+# Identity pull at the rendered view directions (1--6x the parity balance).
+loss.composed_jacobian:
+  - "500.0"
+  - "1000.0"
+  - "1500.0"
+  - "3000.0"
+
+# vd-specific view-basis flattening (per-parameter variance of weights).
+loss.view_dependence:
+  - "0.0"
+  - "500.0"
+  - "1500.0"
+  - "3000.0"
+
+# Weight-space jacobian reg, off in the good recipe but kept as contrast.
+loss.jacobian:
+  - "0.0"
+  - "500.0"
+
+# Output bookkeeping fixed to the 0Close recipe.
+log.print:
+  - "false"
+log.save:
+  - "true"
+window.view:
+  - "false"
+window.close_on_finish:
+  - "false"
+post.analyze:
+  - "false"
+
+# Concept prompt pool (duplicated 1:1 per run via --force_duplicate;
+# 'human' dropped -- it failed across rollback buckets).
+prompts:
+  - "Moose"
+  - "Rabbit"
+  - "Turtle"
+  - "Rhino"
+  - "Hippo"

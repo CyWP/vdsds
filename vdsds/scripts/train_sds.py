@@ -81,8 +81,8 @@ class TrainModelSDS(ViewableScript):
             "run_dir": None,
         },
         "optim": {
-            "epochs": 2500,
-            "lr": 0.005,
+            "epochs": 1500,
+            "lr": 0.0025,
             "accum_steps": 2,
             "step_mode": "accum",  # Options: 'accum' (ours), 'meshup'
             "seed": None,
@@ -111,12 +111,12 @@ class TrainModelSDS(ViewableScript):
         },
         "loss": {
             "diffusion": 1.0,
-            "jacobian": 500.0,
-            "composed_jacobian": 0.0,  # Per-entry reg at rendered view dirs.
+            "jacobian": 0.0,  # Weight-space prior; swept to suppress motion.
+            "composed_jacobian": 500.0,  # Per-entry reg at rendered view dirs.
             "laplacian": 0.0,
             "volume": 0.0,
             "volume_eval_points": 32,
-            "view_dependence": 0.0,
+            "view_dependence": 3000.0,  # Anti-inflation of the view basis.
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -143,7 +143,7 @@ class TrainModelSDS(ViewableScript):
             "point_upwards": True,
             "aug_views": 0,
             "aug_type": "jitter",  # Options: 'jitter', 'random'
-            "jitter_range": math.pi / 2,
+            "jitter_range": math.pi / 4,
             "adapt_dist": False,  # MeshUp-style per-epoch distance rescale.
             "force_deformation_alignment": False,
         },
@@ -166,6 +166,15 @@ class TrainModelSDS(ViewableScript):
             "check_batch_views": 2,
             "analyze": True,
         },
+        # Training-phase schedule: switches the shading/lighting profile,
+        # the step mode ('accum' vs 'meshup' batch computing) and any other
+        # dotted-key overrides at epoch boundaries. Each entry is at least
+        # {'epochs': N}; 'profile': 'meshup'|'legacy'|'none' applies its
+        # shading profile, remaining keys are merged as full-strength
+        # overrides (e.g. {'optim.step_mode': 'meshup'}). When non-empty,
+        # the phase epoch counts sum to the effective total and replace
+        # 'optim.epochs'.
+        "schedule": [],
     }
 
     def _apply_profile(self) -> None:
@@ -220,17 +229,80 @@ class TrainModelSDS(ViewableScript):
             [*self.model.get_parameters()],
             lr=config.optim.lr,
         )
-        for e in range(config.optim.epochs):
-            if self.abort_requested():
-                break
-            optimizer.zero_grad()
-            if config.camera.adapt_dist:
-                self._adapt_dist(e)
-            cameras = self.camera_batch()
-            loss_dict = self.epoch_update(
-                optimizer, cameras, df, text_embeds, prompt_basis, len(prompts)
-            )
-            self.log(e, loss_dict)
+        phases = self._build_schedule()
+        epoch = 0
+        for phase_epochs, phase in phases:
+            if phase is not None:
+                self._enter_phase(optimizer, phase, epoch)
+            for _ in range(phase_epochs):
+                if self.abort_requested():
+                    return
+                optimizer.zero_grad()
+                if config.camera.adapt_dist:
+                    self._adapt_dist(epoch)
+                cameras = self.camera_batch()
+                loss_dict = self.epoch_update(
+                    optimizer, cameras, df, text_embeds, prompt_basis, len(prompts)
+                )
+                self.log(epoch, loss_dict)
+                epoch += 1
+
+    def _build_schedule(self) -> list[tuple[int, dict[str, any] | None]]:
+        """Resolves the phase schedule into (epochs, overrides) pairs.
+
+        An empty 'schedule' config yields the single implicit phase of
+        'optim.epochs' epochs without overrides, matching the unscheduled
+        behavior. Otherwise each phase contributes its 'epochs' count (all
+        counts must be positive, summing to the effective total) together
+        with its override dict (minus 'epochs'), and 'optim.epochs' is set
+        to the total so saved configs record the true run length.
+        """
+        schedule = self.config.get("schedule") or []
+        if not schedule:
+            return [(int(self.config.optim.epochs), None)]
+        phases: list[tuple[int, dict[str, any]]] = []
+        for phase in schedule:
+            phase = dict(phase)  # do not mutate the config's dict entries
+            epochs = int(phase.pop("epochs", 0))
+            if epochs <= 0:
+                raise ValueError(
+                    f"Schedule phase expects a positive 'epochs': {phase}"
+                )
+            phases.append((epochs, phase))
+        self.config.optim.epochs = sum(n for n, _ in phases)
+        return phases
+
+    def _enter_phase(
+        self, optimizer: torch.optim.Optimizer, phase: dict[str, any], epoch: int
+    ) -> None:
+        """Switches to a training phase at an epoch boundary.
+
+        Applies the named shading profile first ('profile' is popped; its
+        managed shader/lighting values are set, overriding the currently
+        merged ones), then merges the remaining dotted-key overrides at full
+        strength. 'optim.lr' propagates to the optimizer parameter groups
+        (Adam is constructed once for the whole run). The renderer is
+        rebuilt so the shader chain picks up the new shading mode.
+        """
+        profile = phase.pop("profile", None)
+        if profile is not None and profile != "none":
+            if profile not in self._shading_profiles:
+                raise ValueError(f"Shading profile '{profile}' is invalid.")
+            for section, values in self._shading_profiles[profile].items():
+                self.config[section].update(values)
+        self.config.update(phase)
+        # LR may arrive nested (Dict wrapping splits dotted keys) or dotted.
+        lr = phase.get("optim.lr")
+        if lr is None and isinstance(phase.get("optim"), Mapping):
+            lr = phase["optim"].get("lr")
+        if lr is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = lr
+        if profile is not None or phase:
+            self.renderer = self.get_renderer()
+        logged: dict[str, any] = {"phase_profile": profile}
+        logged.update({f"phase:{key}": value for key, value in phase.items()})
+        self.log(epoch, logged)
 
     def epoch_update(
         self,

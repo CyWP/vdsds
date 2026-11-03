@@ -3,9 +3,11 @@
 
 Each experiment samples one value per key from the ``--overrides`` YAML file
 (one value per key, ``python -m vdsds`` is launched in a fresh subprocess with
-those overrides). Two exceptions: the ``config`` key (one value forwarded as
-the ``--config`` base config) and the ``prompts`` key: ``--num_prompts``
-prompts (default 2) are sampled and passed via ``--prompt.text``.
+those overrides). Three exceptions: the ``config`` key (one value forwarded as
+the ``--config`` base config), the ``prompts`` key (``--num_prompts`` prompts
+are sampled and passed via ``--prompt.text``), and the reserved
+``num_prompts`` key (sets that prompt count without a CLI flag; an explicit
+``--num_prompts`` wins, default 2).
 
 Each run writes its outputs to ``<run_dir>/<Prompt1_Prompt2>``, where spaces
 and punctuation in the prompts are replaced by underscores. If the same
@@ -98,9 +100,11 @@ def parse_args() -> argparse.Namespace:
         "--num_prompts",
         type=int,
         choices=(1, 2),
-        default=2,
-        help="Number of prompts sampled per run (default 2). With 1, the "
-        "override is a 1-element list (1 basis function / 1 anchor).",
+        default=None,
+        help="Number of prompts sampled per run. Takes precedence over the"
+        " gen file's reserved 'num_prompts' key; falls back to that key,"
+        " then to 2. With 1, the override is a 1-element list (1 basis"
+        " function / 1 anchor).",
     )
     parser.add_argument(
         "--dry_run",
@@ -178,6 +182,19 @@ def main() -> None:
     with args.overrides.open() as f:
         overrides = yaml.safe_load(f)
 
+    # Reserved 'num_prompts' key: sets the prompt count without a CLI flag
+    # (an explicit --num_prompts still wins). Must be popped before sampling
+    # or it would be forwarded to vdsds as an override.
+    file_num_prompts = overrides.pop("num_prompts", None)
+    if isinstance(file_num_prompts, list):
+        file_num_prompts = file_num_prompts[0]
+    if args.num_prompts is not None:
+        num_prompts = args.num_prompts
+    elif file_num_prompts is not None:
+        num_prompts = int(file_num_prompts)
+    else:
+        num_prompts = 2
+
     run_dir = args.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -195,7 +212,7 @@ def main() -> None:
             overrides,
             allow_duplicates=args.duplicate_prompts,
             force_duplicate=args.force_duplicate,
-            num_prompts=args.num_prompts,
+            num_prompts=num_prompts,
         )
         run_name = slugify_run_name(run_dir, sampled, seen)
 

@@ -42,15 +42,11 @@ window.view:
 - "false"
 window.close_on_finish:
 - "false"
-config:
-  - "configs/meshup_parity.yaml"
 
 # Fixed: view-dependent deformation with the BSD attention machinery
 # (drop-in swap to "full" here would give the view-independent control).
 deformation.name:
   - "vd_full"
-diffusion.loss:
-  - "bsd"
 
 post.analyze:
   - "false"
@@ -63,6 +59,7 @@ optim.lr:
   - "0.001"
   
 optim.epochs:
+  - "1000"
   - "1500"
 
 # ---------------- Question 1: view jitter (deformation <-> render cam) ----
