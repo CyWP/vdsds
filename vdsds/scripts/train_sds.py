@@ -534,8 +534,11 @@ class TrainModelSDS(ViewableScript):
         else:
             prompts = [txt + ", a 3d rendering" + extra_suffix]
         if cfg.diffusion.loss == "bsd":
+            # bsd blends one basis function per concept prompt; strings count
+            # as a single prompt (len() would count characters).
+            num_text = len(txt) if isinstance(txt, list) else 1
             basis = SphericalGaussianBasis(
-                num_funcs=len(txt),
+                num_funcs=num_text,
                 num_dims=1,
                 batch_size=1,
                 sigma_overlap=cfg.prompt.overlap,
