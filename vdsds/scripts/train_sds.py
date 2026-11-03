@@ -518,7 +518,11 @@ class TrainModelSDS(ViewableScript):
         aug_views = cfg.camera.aug_views
         batch_size = views * (1 + aug_views)
         # prompt.extra qualifiers are appended verbatim to every prompt.
+        # Accept a single string as one qualifier (CLI overrides arrive as
+        # strings; lists survive the JSON parse path).
         extra = cfg.prompt.extra
+        if isinstance(extra, str):
+            extra = [extra.strip()] if extra.strip() else []
         extra_suffix = (
             ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
         )
