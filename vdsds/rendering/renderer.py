@@ -63,6 +63,14 @@ class Renderer:
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> Renderer:
+        """Default render chain: soft Lambert shading.
+
+        Every interactive surface -- the live viewer window (``View`` ->
+        ``ObjViewer``), the 'views' task and orbit outputs -- renders
+        through this classmethod. Training-time shading modes ('soft' /
+        'hard', config ``shader.shading``) apply only to the trainer's own
+        renderer and must NOT be lifted here.
+        """
         shaders = [
             Albedo(),
             Normal(),
