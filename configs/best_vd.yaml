@@ -1,6 +1,11 @@
 # Best view-dependent configuration inferred from rounds 2-3
 # (meshup_run_2 + meshup_sched_2 analysis, 214 runs).
 #
+# Window/viewer behavior is deliberately NOT pinned here: it follows the
+# class defaults and per-invocation CLI overrides (--window.view false for
+# headless fleets, default viewer on for interactive runs). Only settings
+# that constitute THE validated training recipe are recorded below.
+#
 # Sources per setting:
 # - budget/lr/seed: 2500 epochs (+0.20 over 1500), lr 0.0025 (13/13 Close).
 # - schedule: ~80% step-only switch, meshup stepping while large-scale change
@@ -20,9 +25,6 @@
 #   the model with --path.model.
 log.print: true
 log.save: true
-window.view: false
-window.close_on_finish: true
-
 path.run_dir: ./outputs/best_vd
 
 optim.epochs: 2500
