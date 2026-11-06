@@ -1,0 +1,109 @@
+# Best view-dependent configuration inferred from rounds 2-3
+# (meshup_run_2 + meshup_sched_2 analysis, 214 runs).
+#
+# Sources per setting:
+# - budget/lr/seed: 2500 epochs (+0.20 over 1500), lr 0.0025 (13/13 Close).
+# - schedule: ~80% step-only switch, meshup stepping while large-scale change
+#   is wanted, then accum for the detail stage. Depth-of-evidence note: the
+#   2000/500 profile-swap preset averaged best (3.00) but n=2; the step-only
+#   isolation preset ranked +0.16 while the shading-only isolate ranked
+#   -0.09, and every Squish-type failure bucket carried the legacy shading
+#   stage - so this config keeps hard shading and switches only the step
+#   mode, late (i1 recipe, scaled to a 2500-epoch budget).
+# - regularization: the top rank averages were composed_jacobian 5000
+#   (+0.28) and view_dependence 12000 (+0.22). CAUTION: the same values also
+#   appear in the 0NotFit failure bucket (n=7, 2500-epoch runs) - if those
+#   runs regress, drop to composed 2500 / vd 8000 (next best).
+# - shader/output bookkeeping: parity values (hard shading + cosine light),
+#   plain prompt extras (styled qualifiers scored slightly worse).
+# - prompt: duplicated 1-concept pair; set per run with --prompt.text, and
+#   the model with --path.model.
+log.print: true
+log.save: true
+window.view: false
+window.close_on_finish: true
+
+path.run_dir: ./outputs/best_vd
+
+optim.epochs: 2500
+optim.lr: 0.0025
+optim.accum_steps: 2
+optim.step_mode: meshup  # effective total budget set by the schedule below
+optim.seed: 8888
+optim.train_model: false
+optim.train_centroids: false
+optim.train_sigmas: false
+optim.train_weights: true
+
+diffusion.loss: bsd
+diffusion.model_size: L
+diffusion.dtype: float16
+diffusion.cpu_offload: false
+diffusion.guidance_scale: 100.0
+
+prompt.text: ["Rabbit", "Rabbit"]
+prompt.overlap: 0.75
+prompt.extra: ""
+
+loss.diffusion: 1.0
+loss.jacobian: 0.0  # 82% of all 'nothing happened' runs carried 500.0
+loss.composed_jacobian: 5000.0
+loss.laplacian: 0.0
+loss.volume: 0.0
+loss.volume_eval_points: 32
+loss.view_dependence: 12000.0
+
+model.name: mesh
+
+path.model: ./meshes/hound_uv.obj
+
+deformation.name: vd_full
+
+camera.H: 512
+camera.W: 512
+camera.Zn: 0.01
+camera.Zf: 50.0
+camera.F_min: 30.0
+camera.F_max: 90.0
+camera.radius_min: 1.25
+camera.radius_max: 1.75
+camera.views: 8
+camera.view_source: orbit
+camera.elevation_min: 0.0
+camera.elevation_max: 1.0471975511965976
+camera.point_upwards: true
+camera.aug_views: 0
+camera.aug_type: jitter
+camera.jitter_range: 0.7853981633974483  # pi/4; pi/2 is a close second
+camera.adapt_dist: false
+camera.force_deformation_alignment: false
+
+shader.resize: true
+shader.down_H: 224
+shader.down_W: 224
+shader.shading: hard
+shader.shading_beta: 5.0
+shader.bg_color: [1.0, 1.0, 1.0]
+shader.crop_fit: false
+shader.antialias: true
+
+lighting.alignment: cosine_camera
+lighting.strength: 5.0
+lighting.jitter_sigma: 0.0
+
+# Phase schedule: 80% meshup-style stepping, then the accum detail stage.
+# Hard shading stays on throughout (profile 'meshup' both phases); switching
+# shading without switching stepping consistently ranked worse.
+schedule:
+  - epochs: 2000
+    profile: meshup
+    optim:
+      step_mode: meshup
+  - epochs: 500
+    profile: meshup
+    optim:
+      step_mode: accum
+
+post.orbit: true
+post.check_batch_views: 2
+post.analyze: false
