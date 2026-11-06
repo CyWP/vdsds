@@ -541,12 +541,25 @@ class TrainModelSDS(ViewableScript):
             # bsd blends one basis function per concept prompt; strings count
             # as a single prompt (len() would count characters).
             num_text = len(txt) if isinstance(txt, list) else 1
+            centroids = torch.tensor(cfg.prompt.anchors, dtype=torch.float32)
+            # A single anchor direction is commonly written flat ([x, y, z]);
+            # normalize to the (N, 3) convention, then validate against the
+            # function count with a useful message.
+            if centroids.ndim == 1:
+                centroids = centroids[None]
+            if centroids.shape[0] != num_text:
+                raise ValueError(
+                    f"prompt.anchors holds {centroids.shape[0]} anchor(s) "
+                    f"but the prompt text encodes {num_text} concept "
+                    "prompt(s); provide one (x, y, z) anchor per prompt, "
+                    "e.g. [[0.0, 1.0, 0.0]] for a single prompt."
+                )
             basis = SphericalGaussianBasis(
                 num_funcs=num_text,
                 num_dims=1,
                 batch_size=1,
                 sigma_overlap=cfg.prompt.overlap,
-                centroids=torch.tensor(cfg.prompt.anchors, dtype=torch.float32),
+                centroids=centroids,
                 normalize=True,
             ).to(self.device)
             # Base prompt branch sits after the concept prompts and before
