@@ -93,3 +93,7 @@ dist/
 outputs/
 experiments/multi_gen_runs/
 meshup-replica/
+
+# Experiment reports (solo-experiment contract)
+.agents/
+.agents/

@@ -192,7 +192,7 @@ class Camera:
         Returns new coordinates and respective depths.
         """
         assert pts.shape[-1] == 3
-        K = self.K()[:2, :]
+        K = self.K[:2, :]
         Z = pts[:, 2]
         return (K @ pts.T / Z.unsqueeze(0)).T, Z
 
