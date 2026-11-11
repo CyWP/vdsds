@@ -24,6 +24,13 @@ from ..rendering.shader import (
 )
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
+from ..constraints import (
+    Constraint,
+    ConstraintManager,
+    anchors_from_constraints,
+    prompts_from_constraints,
+)
+from ..utils.depth import DepthAnything
 from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
@@ -120,6 +127,18 @@ class TrainModelSDS(ViewableScript):
             "volume": 0.0,
             "volume_eval_points": 32,
             "view_dependence": 3000.0,  # Anti-inflation of the view basis.
+            # Constraint-view rendered-vs-monocular depth distribution
+            # loss over the constraint images' DA v3 depths (see
+            # TrainModelSDS.depth_loss; wired as an epoch regularizer;
+            # DA v3 load/infer/unload happens once before the run).
+            "depth": 0.0,
+            # Constraint-view silhouette consistency loss (top-k
+            # Chamfer against the constraint overlays' alpha; wired as
+            # an epoch regularizer).
+            "silhouette": 0.0,
+            # Weight of the silhouette under-coverage (inverse) term;
+            # 0 keeps the original over-coverage-only behavior.
+            "silhouette_inverse": 0.0,
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -205,10 +224,150 @@ class TrainModelSDS(ViewableScript):
             elif isinstance(value, Mapping):
                 self._fill_missing(config[key], value)
 
+    def get_constraints(self) -> dict[str, Constraint]:
+        """Load the constraints from the configured JSON file.
+
+        Reads the JSON at 'path.constraints' (typically provided via the
+        --constraints flag). Returns empty when the config entry is None
+        (the default); constraints are only ever loaded from the file.
+
+        Returns:
+            out: The id-keyed constraint dict.
+        """
+        path = self.config.get("path", None)
+        if path is None:
+            return {}
+        path = path.get("constraints", None)
+        if path is None:
+            return {}
+        return ConstraintManager(Path(path)).items()
+
+    def get_depth_renderer(self) -> Renderer:
+        """Cached depth renderer (clip-space z/w, ``NO_DEPTH`` background)."""
+        if not hasattr(self, "_depth_renderer"):
+            self._depth_renderer = Renderer.depth(self.device)
+        return self._depth_renderer
+
+    def prepare_constraint_depths(self) -> None:
+        """Precompute the constraint mono depths before the run starts.
+
+        DA v3 loads, infers all constraint images and unloads within
+        the single :meth:`DepthAnything.depth_from_constraints` call;
+        nothing of it is needed during training.
+        """
+        self._mono_depths = DepthAnything.depth_from_constraints(self.constraints)
+
+    def depth_loss(self, mode: str = "affine") -> Float[Tensor, ""]:
+        """Rendered-vs-monocular depth distribution loss over the views
+        of the loaded constraints.
+
+        The monocular references are the precomputed DA v3 depths of
+        the constraint images (:meth:`prepare_constraint_depths`, run
+        once before training when ``loss.depth`` is enabled). The
+        rendered reference is the clip-space depth of the deformed
+        model at the constraint cameras (``Renderer.depth``,
+        ``NO_DEPTH`` background); mono maps are resampled to the
+        camera resolution.
+
+        Args:
+            mode: Depth loss mode ('affine' or 'minmax') passed
+                through to :func:`depth_loss`.
+
+        Returns:
+            out: Scalar depth loss over the constraint batch.
+        """
+        from ..utils.depth import depth_loss
+
+        if not hasattr(self, "_mono_depths"):
+            raise ValueError(
+                "Constraint mono depths are not precomputed; enable "
+                "'loss.depth' so they are derived before the run starts."
+            )
+        rendered, measured = [], []
+        for cid, mono in self._mono_depths.items():
+            camera = self.constraints[cid].view.camera.copy().to(self.device)
+            data = self.model.deformed(camera)
+            rendered.append(
+                self.get_depth_renderer()(
+                    data, camera, self.randomized_light(camera)
+                )["depth"]
+            )
+            measured.append(
+                ImgUtils.resize(mono[None, None], camera.H, camera.W).to(
+                    self.device
+                )
+            )
+        if len(rendered) == 0:
+            raise ValueError(
+                "Depth loss requires constraints with images and views."
+            )
+        return depth_loss(
+            torch.cat(rendered, dim=0), torch.cat(measured, dim=0), mode=mode
+        )
+
+    def silhouette_loss(self) -> Float[Tensor, ""]:
+        """Silhouette consistency loss over the views of the loaded
+        constraints.
+
+        Forwards to the original ported implementation
+        (:func:`vdsds.utils.silhouette.silhouette_loss`, unmodified:
+        top-k Chamfer distance from projected out-of-mask deformed-mesh
+        vertices to the target silhouette pixels, over-coverage term
+        only). The loss requires an RGBA image from the constraint: the
+        constraint overlay is placed at the constraint camera's
+        resolution and its alpha channel carries the target silhouette.
+
+        Constraints without an overlay are skipped with a notice; with
+        none qualifying, this raises. Wired into the epoch update as a
+        regularizer via ``_regularizer_losses``; the config multiplier
+        ``loss.silhouette`` applies there (per epoch; no
+        accumulation-step compensation since the constraint batch is
+        constant).
+
+        Returns:
+            out: Scalar silhouette loss over the constraint batch.
+        """
+        from ..utils.silhouette import silhouette_loss as silhouette_loss_fn
+
+        tgt_imgs, meshes, cameras = [], [], []
+        for cid, constraint in self.constraints.items():
+            view = constraint.view if constraint is not None else None
+            overlay = view.overlay if view is not None else None
+            camera = view.camera if view is not None else None
+            if overlay is None:
+                print(f"Skipping constraint {cid[:6]}: no overlay (rgba target).")
+                continue
+            if camera is None:
+                print(f"Skipping constraint {cid[:6]}: no view attached.")
+                continue
+            camera = camera.copy().to(self.device)
+            tgt_imgs.append(overlay.image(camera.H, camera.W).to(self.device))
+            meshes.append(self.model.deformed(camera))
+            cameras.append(camera)
+        if len(tgt_imgs) == 0:
+            raise ValueError("Silhouette loss requires constraints with overlays.")
+        loss_cfg = self.config.get("loss", None)
+        in_weight = (
+            loss_cfg.get("silhouette_inverse", 0.0) if loss_cfg is not None else 0.0
+        )
+        return silhouette_loss_fn(
+            torch.cat(tgt_imgs, dim=0),
+            meshes,
+            cameras,
+            in_weight=in_weight,
+        )
+
     def run(self):
         device = self.device
         config = self.config
         self._apply_profile()
+        self.constraints = self.get_constraints()
+        if self.constraints:
+            print(f"Loaded {len(self.constraints)} constraint(s) for training.")
+        if self.constraints and config.loss.depth != 0.0:
+            # DA v3 load/infer/unload happens inside this single call,
+            # before training starts; nothing of it runs per epoch.
+            self.prepare_constraint_depths()
         df = DeepFloydGuidance(config.diffusion, device)
         seed = config.optim.seed
         if seed is not None:
@@ -490,6 +649,12 @@ class TrainModelSDS(ViewableScript):
                 self.volume_loss(),
                 cfg.loss.volume * accum_steps,
             )
+        # Constraint-view steps: evaluated once per epoch on the fixed
+        # constraint set, so no accumulation-step compensation.
+        if cfg.loss.silhouette != 0.0:
+            regs["silhouette"] = (self.silhouette_loss(), cfg.loss.silhouette)
+        if cfg.loss.depth != 0.0:
+            regs["depth"] = (self.depth_loss(), cfg.loss.depth)
         return regs
 
     def _apply_regularizers(
@@ -509,11 +674,40 @@ class TrainModelSDS(ViewableScript):
             weighted.backward()
             loss_dict[f"{name}_loss"] = weighted.item()
 
+    def get_constraint_prompts(self) -> tuple[list[str], list[list[float]]]:
+        """Prompts and their anchors from the loaded constraints.
+
+        Constraints always carry views, so every prompt-bearing
+        constraint has an anchor: the (prompt, anchor) lists are
+        aligned, one entry per prompt-bearing constraint. Constraints
+        without a prompt are simply not taken into account.
+
+        Returns:
+            out: (prompts, anchors) with one normalized (3,) anchor per
+                prompt.
+        """
+        prompt_map = prompts_from_constraints(self.constraints)
+        anchor_map = anchors_from_constraints(
+            self.constraints, self.model.model.centroid
+        )
+        prompts = list(prompt_map.values())
+        anchors = [
+            [float(v) for v in anchor_map[cid].tolist()] for cid in prompt_map
+        ]
+        return prompts, anchors
+
     def get_text_embeds(
         self, df: DeepFloydGuidance
     ) -> tuple[list[str], Float[Tensor, "..."], SphericalGaussianBasis | None]:
         cfg = self.config
         txt = cfg.prompt.text
+        anchors = cfg.prompt.anchors
+        if self.constraints:
+            print(
+                "Deriving prompt(s)/anchor(s) from the loaded constraints; "
+                "config prompt text/anchors are ignored."
+            )
+            txt, anchors = self.get_constraint_prompts()
         views = cfg.camera.views
         aug_views = cfg.camera.aug_views
         batch_size = views * (1 + aug_views)
@@ -541,7 +735,7 @@ class TrainModelSDS(ViewableScript):
             # bsd blends one basis function per concept prompt; strings count
             # as a single prompt (len() would count characters).
             num_text = len(txt) if isinstance(txt, list) else 1
-            centroids = torch.tensor(cfg.prompt.anchors, dtype=torch.float32)
+            centroids = torch.tensor(anchors, dtype=torch.float32)
             # A single anchor direction is commonly written flat ([x, y, z]);
             # normalize to the (N, 3) convention, then validate against the
             # function count with a useful message.

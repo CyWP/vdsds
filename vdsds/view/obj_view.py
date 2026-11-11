@@ -8,6 +8,7 @@ from torch import Tensor
 
 from ..deformations.base import Deformation
 from ..rendering import Camera, LightSource, Renderer
+from ..rendering.view_state import Overlay
 from ..representations.base import Model
 from ..utils.img import ImgUtils, Splimage
 from .keymap import K_CTRL, K_SHIFT
@@ -73,7 +74,9 @@ class ObjViewer:
         self._frame_idx += 1
 
     @torch.no_grad()
-    def get_render(self, H: int, W: int) -> Float[Tensor, "B 4 H W"]:
+    def get_render(
+        self, H: int, W: int, overlay: Overlay | None = None
+    ) -> Float[Tensor, "B 4 H W"]:
         if H != self.camera.H or W != self.camera.W:
             self.camera.set_window_size(H, W)
         self.check_rotation()
@@ -87,6 +90,8 @@ class ObjViewer:
         else:
             model = self.obj
         render = self.renderer(model, self.camera, self.light)["render"]
+        if overlay is not None:
+            render = overlay.overlay(render)
         self._save_frame(render)
         return render
 

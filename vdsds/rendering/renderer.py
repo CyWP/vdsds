@@ -21,6 +21,7 @@ from .shader import (
     Normal,
     Shader,
     SoftLambertShader,
+    Depth,
 )
 
 
@@ -83,6 +84,22 @@ class Renderer:
             Clamp(apply_to={"render"}),
             Antialias(apply_to={"render"}),
         ]
+        return Renderer(shaders, device=device, dtype=dtype)
+
+    @classmethod
+    def depth(
+        cls,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> Renderer:
+        """Render chain producing a depth map under the ``'depth'`` key.
+
+        The output is the interpolated clip-space z/w from the rasterizer:
+        ``(0, 1]`` for foreground (0 at the near plane, 1 at the far plane)
+        and ``-1`` in the background. Returned as a single-channel image
+        ``B 1 H W``.
+        """
+        shaders = [Depth()]
         return Renderer(shaders, device=device, dtype=dtype)
 
     def camera_to_nvdiffrast(self, camera):

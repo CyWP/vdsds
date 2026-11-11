@@ -4,10 +4,13 @@ from PySide6.QtCore import QObject, QPoint, Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QDockWidget,
+    QHBoxLayout,
     QLabel,
+    QListWidget,
     QMainWindow,
     QPushButton,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -66,22 +69,83 @@ class MainWindow(QMainWindow):
         # ----- Right dock -----
         dock = QDockWidget("Controls", self)
         dock.setAllowedAreas(Qt.RightDockWidgetArea)
-        dock_widget = QWidget()
-        dock_layout = QVBoxLayout(dock_widget)
-        self.view_deformation_btn = QPushButton("View Deformation")
-        self.view_deformation_btn.setCheckable(True)
-        self.view_deformation_btn.setChecked(True)
-        dock_layout.addWidget(self.view_deformation_btn)
-        self.record_btn = QPushButton("Record")
-        self.record_btn.setCheckable(True)
-        self.record_btn.setChecked(False)
-        dock_layout.addWidget(self.record_btn)
-        dock_layout.addStretch()
-        dock.setWidget(dock_widget)
+        dock.setWidget(self._build_dock_tabs())
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
         # Optional: start maximized now that geometry is set
         self.showMaximized()
+
+    def _build_dock_tabs(self) -> QTabWidget:
+        """Build the dock's tabbed content: existing controls plus the
+        constraints tab."""
+        tabs = QTabWidget()
+        tabs.addTab(self._build_controls_tab(), "Controls")
+        tabs.addTab(self._build_constraints_tab(), "Constraints")
+        return tabs
+
+    def _build_controls_tab(self) -> QWidget:
+        """Build the original controls tab (deformation view, recording)."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.view_deformation_btn = QPushButton("View Deformation")
+        self.view_deformation_btn.setCheckable(True)
+        self.view_deformation_btn.setChecked(True)
+        layout.addWidget(self.view_deformation_btn)
+        self.record_btn = QPushButton("Record")
+        self.record_btn.setCheckable(True)
+        self.record_btn.setChecked(False)
+        layout.addWidget(self.record_btn)
+        layout.addStretch()
+        return widget
+
+    def _build_constraints_tab(self) -> QWidget:
+        """Build the constraints tab: overlay placement controls and the
+        per-constraint action set."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # ----- Overlay row -----
+        overlay_row = QWidget()
+        overlay_layout = QHBoxLayout(overlay_row)
+        self.overlay_load_btn = QPushButton("Load Overlay")
+        overlay_layout.addWidget(self.overlay_load_btn)
+        self.overlay_clear_btn = QPushButton("Clear Overlay")
+        overlay_layout.addWidget(self.overlay_clear_btn)
+        layout.addWidget(overlay_row)
+
+        # ----- Constraint list -----
+        self.constraint_list = QListWidget()
+        self.constraint_list.setSelectionMode(QListWidget.SingleSelection)
+        layout.addWidget(self.constraint_list)
+
+        # ----- Per-constraint action row -----
+        action_row = QWidget()
+        action_layout = QHBoxLayout(action_row)
+        self.constraint_add_btn = QPushButton("Add")
+        action_layout.addWidget(self.constraint_add_btn)
+        self.constraint_set_view_btn = QPushButton("Set View")
+        self.constraint_set_view_btn.setEnabled(False)
+        action_layout.addWidget(self.constraint_set_view_btn)
+        self.constraint_jump_btn = QPushButton("Jump to View")
+        self.constraint_jump_btn.setEnabled(False)
+        action_layout.addWidget(self.constraint_jump_btn)
+        self.constraint_prompt_btn = QPushButton("Set Prompt")
+        self.constraint_prompt_btn.setEnabled(False)
+        action_layout.addWidget(self.constraint_prompt_btn)
+        self.constraint_delete_btn = QPushButton("Delete")
+        self.constraint_delete_btn.setEnabled(False)
+        action_layout.addWidget(self.constraint_delete_btn)
+        layout.addWidget(action_row)
+
+        # ----- Save row -----
+        save_row = QWidget()
+        save_layout = QHBoxLayout(save_row)
+        self.constraint_save_btn = QPushButton("Save JSON")
+        save_layout.addWidget(self.constraint_save_btn)
+        save_layout.addStretch()
+        layout.addWidget(save_row)
+        layout.addStretch()
+        return widget
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -204,6 +268,13 @@ class Viewport(QLabel):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        delta = event.angleDelta().y()
-        self.scrolled.emit(delta)
+        # Only forward genuinely vertical scrolls. Horizontal wheel motion
+        # (tilt of the wheel or horizontal two-finger scroll) is reported
+        # on its own axis and must not drive zoom or camera translation;
+        # on some X11 remapped devices a tilt arrives on the same axis
+        # (angleDelta.y() == 0, x-only) and would otherwise be mistaken
+        # for vertical scrolling.
+        delta = event.angleDelta()
+        if delta.y() != 0:
+            self.scrolled.emit(delta.y())
         super().wheelEvent(event)

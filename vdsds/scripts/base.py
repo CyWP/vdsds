@@ -8,6 +8,7 @@ from PySide6.QtCore import QTimer
 
 from ..deformations import get_deformation, load_deformation
 from ..deformations.base import Deformation
+from ..rendering.light import LightSource
 from ..representations import get_model
 from ..representations.base import Model
 from ..utils.config import Config
@@ -82,11 +83,14 @@ class ViewableScript(Script):
                 "close_on_finish": False,
                 "finish_on_close": True,
                 "bg_color": [0.2, 0.2, 0.2],
+                "light": {"strength": 1.5},
             },
             "model": {
                 "name": "textured_mesh",
             },
-            "path": {"model": None},
+            # Constraints live in-memory by default; set 'constraints'
+            # (or the CLI --constraints flag) to load/persist a JSON file.
+            "path": {"model": None, "constraints": None},
         }
     )
 
@@ -100,8 +104,19 @@ class ViewableScript(Script):
         cfg = self.config
         self.model = self.load_model().to(device)
         self._closed = threading.Event()
+        constraints_path = cfg.path.constraints
+        if constraints_path is not None:
+            constraints_path = Path(constraints_path)
         if cfg.window.view:
-            self.view = View(self.model, fps=cfg.window.fps, on_close=self._on_close)
+            self.view = View(
+                self.model,
+                fps=cfg.window.fps,
+                on_close=self._on_close,
+                constraints_path=constraints_path,
+                # Viewer windows light up at 1.75; other processes keep the
+                # LightSource class default.
+                light=LightSource(strength=torch.tensor(cfg.window.light.strength)),
+            )
         else:
             self.view = None
 

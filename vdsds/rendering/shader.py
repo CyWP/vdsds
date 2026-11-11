@@ -13,6 +13,12 @@ from torch import Tensor
 from .context import RenderContext
 from .utils import attr_map
 
+# Sentinel for pixels without geometry in rendered depth maps ('Depth'
+# shader): outside the valid (0, 1] clip-space depth range so background
+# is never mistaken for a real depth. Consumers (e.g. the monocular
+# depth loss) must use the same constant.
+NO_DEPTH = -1.0
+
 
 class Shader(ABC):
     @abstractmethod
@@ -30,6 +36,24 @@ class MeshAttrMap(Shader):
 
     def apply(self, ctx: RenderContext) -> dict[str, Float[Tensor, "B H W C"]]:
         return {self.out_key: attr_map(ctx, getattr(ctx.mesh, self.attr))}
+
+
+class Depth(Shader):
+    """Outputs interpolated rasterizer depth (clip-space z/w) as a single channel.
+
+    Valid foreground depth lies in (0, 1] -- 0 at the near plane, 1 at the
+    far plane. Pixels with no geometry (rasterizer triangle id <= 0) are
+    filled with ``bg`` (default ``NO_DEPTH``, outside the valid range so
+    background is never mistaken for a real depth)."""
+
+    def __init__(self, out_key: str = "depth", bg: float = NO_DEPTH):
+        self.out_key = out_key
+        self.bg = bg
+
+    def apply(self, ctx: RenderContext) -> dict[str, Float[Tensor, "B H W C"]]:
+        z = ctx.rast[..., 2:3]
+        mask = ctx.rast[..., 3:4] > 0
+        return {self.out_key: torch.where(mask, z, torch.full_like(z, self.bg))}
 
 
 class Albedo(MeshAttrMap):
