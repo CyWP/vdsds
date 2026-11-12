@@ -300,7 +300,7 @@ def test_render_depth_background_sentinel():
 
 
 def test_depth_from_constraints_uses_placed_overlays(fake_model, tmp_path):
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering.camera import Camera
     from vdsds.rendering.view_state import Overlay, ViewState
 
@@ -332,7 +332,7 @@ def test_depth_from_constraints_uses_placed_overlays(fake_model, tmp_path):
 
 
 def test_depth_from_constraints_empty_when_no_images(fake_model):
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering.camera import Camera
     from vdsds.rendering.view_state import ViewState
 

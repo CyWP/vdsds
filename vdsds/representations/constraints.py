@@ -8,7 +8,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from .rendering.view_state import ViewState
+from ..rendering.view_state import ViewState
 
 
 class Constraint:

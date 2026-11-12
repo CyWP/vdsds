@@ -24,7 +24,7 @@ from ..rendering.shader import (
 )
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
-from ..constraints import (
+from ..representations.constraints import (
     Constraint,
     ConstraintManager,
     anchors_from_constraints,

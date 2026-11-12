@@ -12,7 +12,7 @@ import pytest
 import torch
 from PIL import Image
 
-from vdsds.constraints import ConstraintManager
+from vdsds.representations.constraints import ConstraintManager
 from vdsds.rendering.camera import Camera, CameraCoordinates
 from vdsds.rendering.view_state import (
     Overlay,
@@ -351,7 +351,7 @@ def _train_script(constraints, centroid=None, device="cuda:0"):
 def _build_constraints(pairs):
     """pairs: list of (prompt, offset) -> constraints with identity-Q
     cameras of radius 1, translated to the given offset."""
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering.camera import Camera, CameraCoordinates
     from vdsds.utils.quaternion import Quaternion
 
@@ -375,7 +375,7 @@ def test_anchors_and_prompts_from_constraints():
     """Module-level derivation: prompts follow prompt texts (prompt-less
     constraints are excluded); anchors follow the views -- every
     constraint carries a view, so anchors exist for all of them."""
-    from vdsds.constraints import (
+    from vdsds.representations.constraints import (
         anchors_from_constraints,
         prompts_from_constraints,
         Constraint,
@@ -692,7 +692,7 @@ def test_train_script_depth_loss_uses_constraint_images(monkeypatch, tmp_path):
     import numpy as np
 
     import vdsds.utils.depth as depth_module
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering import Camera, LightSource
     from vdsds.rendering.view_state import Overlay
     from vdsds.representations.mesh import Mesh
@@ -780,7 +780,7 @@ def test_train_script_silhouette_loss_over_constraint_overlays(monkeypatch, tmp_
     import numpy as np
 
     import vdsds.utils.silhouette as silhouette_module
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering import Camera
     from vdsds.rendering.view_state import Overlay, camera_to_dict
     from vdsds.representations.mesh import Mesh
@@ -836,7 +836,7 @@ def test_train_script_silhouette_inverse_weight_from_config(monkeypatch, tmp_pat
     import numpy as np
 
     import vdsds.utils.silhouette as silhouette_module
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
     from vdsds.rendering import Camera
     from vdsds.rendering.view_state import Overlay
 
@@ -868,7 +868,7 @@ def test_train_script_silhouette_inverse_weight_from_config(monkeypatch, tmp_pat
 
 
 def test_train_script_silhouette_loss_requires_overlays():
-    from vdsds.constraints import Constraint
+    from vdsds.representations.constraints import Constraint
 
     script = _train_script(
         {"cid_x": Constraint(view=ViewState(camera=Camera()), prompt="")}

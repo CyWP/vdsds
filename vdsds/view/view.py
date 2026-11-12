@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
 
-from ..constraints import ConstraintManager
+from ..representations.constraints import ConstraintManager
 from ..deformations.base import Deformation
 from ..rendering.camera import Camera
 from ..rendering.light import LightSource
