@@ -113,7 +113,7 @@ class ViewableScript(Script):
                 fps=cfg.window.fps,
                 on_close=self._on_close,
                 constraints_path=constraints_path,
-                # Viewer windows light up at 1.75; other processes keep the
+                # Viewer windows light up at 1.5; other processes keep the
                 # LightSource class default.
                 light=LightSource(strength=torch.tensor(cfg.window.light.strength)),
             )

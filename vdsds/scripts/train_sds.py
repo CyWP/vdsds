@@ -22,14 +22,14 @@ from ..rendering.shader import (
     Normal,
     SoftLambertShader,
 )
-from ..utils.config import Config
-from ..utils.deepfloyd import DeepFloydGuidance
 from ..representations.constraints import (
     Constraint,
     ConstraintManager,
     anchors_from_constraints,
     prompts_from_constraints,
 )
+from ..utils.config import Config
+from ..utils.deepfloyd import DeepFloydGuidance
 from ..utils.depth import DepthAnything
 from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
@@ -135,7 +135,7 @@ class TrainModelSDS(ViewableScript):
             # Constraint-view silhouette consistency loss (top-k
             # Chamfer against the constraint overlays' alpha; wired as
             # an epoch regularizer).
-            "silhouette": 0.0,
+            "silhouette": 100.0,
             # Weight of the silhouette under-coverage (inverse) term;
             # 0 keeps the original over-coverage-only behavior.
             "silhouette_inverse": 0.0,
@@ -288,19 +288,15 @@ class TrainModelSDS(ViewableScript):
             camera = self.constraints[cid].view.camera.copy().to(self.device)
             data = self.model.deformed(camera)
             rendered.append(
-                self.get_depth_renderer()(
-                    data, camera, self.randomized_light(camera)
-                )["depth"]
+                self.get_depth_renderer()(data, camera, self.randomized_light(camera))[
+                    "depth"
+                ]
             )
             measured.append(
-                ImgUtils.resize(mono[None, None], camera.H, camera.W).to(
-                    self.device
-                )
+                ImgUtils.resize(mono[None, None], camera.H, camera.W).to(self.device)
             )
         if len(rendered) == 0:
-            raise ValueError(
-                "Depth loss requires constraints with images and views."
-            )
+            raise ValueError("Depth loss requires constraints with images and views.")
         return depth_loss(
             torch.cat(rendered, dim=0), torch.cat(measured, dim=0), mode=mode
         )
@@ -341,7 +337,16 @@ class TrainModelSDS(ViewableScript):
                 print(f"Skipping constraint {cid[:6]}: no view attached.")
                 continue
             camera = camera.copy().to(self.device)
-            tgt_imgs.append(overlay.image(camera.H, camera.W).to(self.device))
+            placed = overlay.image(camera.H, camera.W)
+            if bool((placed[0, 3] >= 0.999).all()):
+                print(
+                    f"Constraint {cid[:6]}: overlay is fully opaque; its "
+                    "alpha covers the whole frame, so the silhouette loss "
+                    "has no out-of-mask vertices to penalize. The target "
+                    "needs a transparent background (a real alpha "
+                    "silhouette) to constrain the shape."
+                )
+            tgt_imgs.append(placed.to(self.device))
             meshes.append(self.model.deformed(camera))
             cameras.append(camera)
         if len(tgt_imgs) == 0:
@@ -427,9 +432,7 @@ class TrainModelSDS(ViewableScript):
             phase = dict(phase)  # do not mutate the config's dict entries
             epochs = int(phase.pop("epochs", 0))
             if epochs <= 0:
-                raise ValueError(
-                    f"Schedule phase expects a positive 'epochs': {phase}"
-                )
+                raise ValueError(f"Schedule phase expects a positive 'epochs': {phase}")
             phases.append((epochs, phase))
         self.config.optim.epochs = sum(n for n, _ in phases)
         return phases
@@ -536,9 +539,7 @@ class TrainModelSDS(ViewableScript):
         epoch_loss = 0.0
         for _ in range(accum_steps):
             reconstruction_loss = (
-                self.diffusion_loss(
-                    cameras, df, text_embeds, prompt_basis, num_prompts
-                )
+                self.diffusion_loss(cameras, df, text_embeds, prompt_basis, num_prompts)
                 * self.config.loss.diffusion
             ) / accum_steps
             reconstruction_loss.backward()
@@ -584,9 +585,12 @@ class TrainModelSDS(ViewableScript):
         epoch_loss = 0.0
         renders = self.get_training_renders(cameras)
         for _ in range(accum_steps):
-            reconstruction_loss = self.diffusion_step(
-                renders, cameras, df, text_embeds, prompt_basis, num_prompts
-            ) * self.config.loss.diffusion
+            reconstruction_loss = (
+                self.diffusion_step(
+                    renders, cameras, df, text_embeds, prompt_basis, num_prompts
+                )
+                * self.config.loss.diffusion
+            )
             # Retain: the next accumulation step backwards through the
             # same (render-time) graph — the stale-graph behavior of the
             # original loop.
@@ -691,9 +695,7 @@ class TrainModelSDS(ViewableScript):
             self.constraints, self.model.model.centroid
         )
         prompts = list(prompt_map.values())
-        anchors = [
-            [float(v) for v in anchor_map[cid].tolist()] for cid in prompt_map
-        ]
+        anchors = [[float(v) for v in anchor_map[cid].tolist()] for cid in prompt_map]
         return prompts, anchors
 
     def get_text_embeds(
@@ -717,9 +719,7 @@ class TrainModelSDS(ViewableScript):
         extra = cfg.prompt.extra
         if isinstance(extra, str):
             extra = [extra.strip()] if extra.strip() else []
-        extra_suffix = (
-            ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
-        )
+        extra_suffix = ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
         if isinstance(txt, list):
             # MeshUp convention: the last prompt is kept raw (no rendering
             # suffix); extras still apply to every prompt.
@@ -895,8 +895,7 @@ class TrainModelSDS(ViewableScript):
     def random_cam(self) -> Camera:
         cfg = self.config.camera
         radius = (
-            random.random() * (self._radius_max - self._radius_min)
-            + self._radius_min
+            random.random() * (self._radius_max - self._radius_min) + self._radius_min
         )
         F = random.random() * (cfg.F_max - cfg.F_min) + cfg.F_min
         if cfg.view_source == "random":

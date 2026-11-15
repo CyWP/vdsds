@@ -95,6 +95,8 @@ class MainWindow(QMainWindow):
         self.record_btn.setCheckable(True)
         self.record_btn.setChecked(False)
         layout.addWidget(self.record_btn)
+        self.screenshot_btn = QPushButton("Screenshot")
+        layout.addWidget(self.screenshot_btn)
         layout.addStretch()
         return widget
 

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
 
@@ -13,6 +14,7 @@ from ..rendering.camera import Camera
 from ..rendering.light import LightSource
 from ..rendering.view_state import Overlay, ViewState
 from ..representations.base import Model
+from ..utils.img import ImgUtils
 from ..utils.timer import TimedJob
 from .keymap import K_ALT, K_CTRL, KeyHandler
 from .obj_view import ObjViewer
@@ -43,6 +45,9 @@ class View(QApplication):
         # pan and zoom act on one camera instance only.
         self.view_state = ViewState(camera=self.viewer.camera)
         self._cid_by_row: dict[int, str] = {}
+        # One-shot screenshot hook: set by the UI to catch the next
+        # update() frame and save it.
+        self._pending_screenshot: Path | None = None
         self._connect()
         self.frame_retriever = TimedJob()
         self.frame_retriever.start(self.update, fps)
@@ -69,6 +74,7 @@ class View(QApplication):
             lambda checked: setattr(self.viewer, "view_deformed", checked)
         )
         self.window.window.record_btn.toggled.connect(self._toggle_recording)
+        self.window.window.screenshot_btn.clicked.connect(self._screenshot_dialog)
         self._connect_constraints()
 
     # ----- Overlay + viewport interactions -----
@@ -171,13 +177,14 @@ class View(QApplication):
         """Load a constraint's view into the viewport.
 
         Rebuilds the view state so its camera reference tracks the
-        viewer's camera.
+        viewer's camera; a constraint view with an overlay restores the
+        overlay with it. Constraints without a usable view are a no-op.
         """
         constraint = self.constraints.get(cid)
         if constraint is None:
             return
         view = constraint.view
-        camera = view.camera
+        camera = view.camera if view is not None else None
         if camera is None:
             return
         self.viewer.camera = camera.copy().to(self.viewer.camera.device)
@@ -278,6 +285,44 @@ class View(QApplication):
             if path:
                 print(f"Recording saved to {path}")
 
+    # ----- Screenshot -----
+
+    def _screenshot_dialog(self):
+        """Open a save dialog and arm the screenshot hook on the choice."""
+        path, _ = QFileDialog.getSaveFileName(
+            self.window.window, "Save Screenshot", "screenshot.png", _IMAGE_FILTER
+        )
+        if path:
+            self.request_screenshot(path)
+
+    def request_screenshot(self, path: str | Path):
+        """Arm a one-shot hook that saves the next rendered frame.
+
+        Frames are produced by the background update loop, so the
+        screenshot is not taken here; instead the next ``update`` call
+        is caught and its image written to ``path``.
+        """
+        path = Path(path)
+        if not path.suffix:
+            path = path.with_suffix(".png")
+        self._pending_screenshot = path
+
+    def _save_screenshot(self, path: Path, render):
+        """Write a rendered frame tensor to an image file.
+
+        The render is RGBA with a transparent background; for formats
+        without alpha (JPEG), it is composited over white.
+        """
+        img = ImgUtils.tensor2pil(render)
+        if isinstance(img, list):
+            img = img[0]
+        if img.mode == "RGBA" and path.suffix.lower() in (".jpg", ".jpeg"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.getchannel("A"))
+            img = background
+        img.save(str(path))
+        print(f"Screenshot saved to {path}")
+
     def close(self):
         self.constraints.save()
         self.frame_retriever.stop()
@@ -288,6 +333,14 @@ class View(QApplication):
             image = self.viewer.get_render(
                 *self.window.dimensions, overlay=self.view_state.overlay
             )
+            if self._pending_screenshot is not None:
+                path = self._pending_screenshot
+                self._pending_screenshot = None
+                # Same camera state as the displayed frame: the render
+                # below is background-free RGBA (transparent export).
+                self._save_screenshot(
+                    path, self.viewer.get_transparent_render(*self.window.dimensions)
+                )
             image = (image.permute(0, 2, 3, 1).cpu().contiguous().numpy() * 255).astype(
                 np.uint8
             )

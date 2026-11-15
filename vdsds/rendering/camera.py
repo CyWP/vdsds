@@ -8,7 +8,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from ..utils.quaternion import Quaternion
-from .conventions import FORWARD, UP
+from .conventions import FORWARD, NVDIFFRAST_CONVERSION_MTX, UP
 
 
 class CameraCoordinates:
@@ -196,13 +196,28 @@ class Camera:
         Z = pts[:, 2]
         return (K @ pts.T / Z.unsqueeze(0)).T, Z
 
-    def project_w2i(self, pts: Float[Tensor, "N 3"]) -> Float[Tensor, "N 3"]:
+    def project_w2i(
+        self, pts: Float[Tensor, "N 3"]
+    ) -> Float[Tensor, "N 2"]:
         """
-        Project set of points in cartesian space to image space.
+        Project set of points in cartesian space to image pixels.
+
+        Uses the renderer's camera convention: world points are mapped
+        through the nvdiffrast axis conversion before the world-to-camera
+        transform (see ``NVDIFFRAST_CONVERSION_MTX``), so the projected
+        pixels line up with rasterized renders for every camera
+        orientation. The OpenGL conversion present in the renderer's
+        clip-space chain cancels against the rasterizer's NDC y flip and
+        must not be applied here.
         """
-        c = self.project_w2c(pts)
-        i, _ = self.project_c2i(c)
-        return i
+        nv = torch.tensor(
+            NVDIFFRAST_CONVERSION_MTX, dtype=self.dtype, device=self.device
+        )
+        p_h = torch.cat([pts, torch.ones_like(pts[:, :1])], dim=1)
+        c = (self.w2c @ nv @ p_h.T).T[:, :3]
+        u = self.Fx * c[:, 0] / c[:, 2] + self.Cx
+        v = self.Fx * c[:, 1] / c[:, 2] + self.Cy
+        return torch.stack([u, v], dim=1)
 
     def translate(self, vec: Float[Tensor, 3]):
         """

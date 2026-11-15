@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -114,6 +115,25 @@ def test_overlay_roundtrip(png_path, overlay):
     restored = Overlay.from_dict(data)
     assert restored.img.image().shape == overlay.img.image().shape
     assert torch.equal(restored.img.image(), overlay.img.image())
+
+
+def test_overlay_roundtrip_keeps_path(png_path, camera, overlay):
+    """A reloaded overlay keeps its source path, so it stays serializable.
+
+    Regression: from_dict used to rebuild the overlay from a bare Splimage,
+    which carries no source path; every later to_dict (e.g. a manager
+    autosave) then raised the 'cannot be serialized' error.
+    """
+    restored = Overlay.from_dict(overlay.to_dict())
+    assert restored.path == overlay.path
+    # The path must survive a save/reload round trip through a manager.
+    out = Path(png_path).with_name("constraints.json")
+    manager = ConstraintManager(out)
+    cid = manager.add(ViewState(camera=camera.copy(), overlay=restored), "p")
+    reloaded = ConstraintManager(out)
+    assert reloaded.get(cid).view.overlay.path == overlay.path
+    reloaded.set_prompt(cid, "p2")  # triggers autosave; must not raise
+
 
 
 def test_overlay_manipulators(png_path):

@@ -270,7 +270,12 @@ class Quaternion:
         return (r.item(), p.item(), y.item())
 
     def copy(self) -> Quaternion:
-        return Quaternion(self.q.clone())
+        # Bit-exact copy: constructing through __init__ would re-normalize,
+        # letting every copy drift the quaternion by up to one float32 ULP
+        # (an already-unit q's float32 norm is rarely exactly 1.0).
+        new = Quaternion.__new__(Quaternion)
+        new.q = self.q.clone()
+        return new
 
     def clone(self) -> Quaternion:
         return self.copy()

@@ -235,8 +235,12 @@ class Overlay:
     @classmethod
     def from_dict(cls, data: dict) -> Overlay:
         """Rebuild an Overlay from :meth:`to_dict` output."""
+        # Pass the source path itself (not a bare Splimage): the path-like
+        # constructor branch records it, so the reloaded overlay stays
+        # serializable (autosave) and keeps its identity in the constraint
+        # list.
         return cls(
-            img=Splimage(data["img"]),
+            img=data["img"],
             scale=data.get("scale", 1.0),
             x=data.get("x", 0),
             y=data.get("y", 0),

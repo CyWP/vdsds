@@ -18,6 +18,7 @@ from .shader import (
     Antialias,
     BackgroundColor,
     Clamp,
+    HalfLambertShader,
     Normal,
     Shader,
     SoftLambertShader,
@@ -63,6 +64,8 @@ class Renderer:
         bg_color: Float[Tensor, 3],
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        shading: str = "soft",
+        background: bool = True,
     ) -> Renderer:
         """Default render chain: soft Lambert shading.
 
@@ -71,16 +74,37 @@ class Renderer:
         through this classmethod. Training-time shading modes ('soft' /
         'hard', config ``shader.shading``) apply only to the trainer's own
         renderer and must NOT be lifted here.
+
+        Args:
+            shading: Lambert variant for the shading step. 'soft' (the
+                default) weights the cosine with a softplus; 'half'
+                linearly remaps the cosine to the [0, 1] range
+                (Half-Lambert), the gentler look the viewer uses so
+                rendered frames stay comfortable to edit.
+            background: When True (the default), the background color is
+                composited in and the alpha channel is dropped (3-channel
+                output). When False, that step is skipped so the
+                rasterizer alpha survives: RGBA output with transparent
+                background, used for transparent screenshot exports.
         """
+        lambert = {
+            "soft": SoftLambertShader,
+            "half": HalfLambertShader,
+        }[shading](apply_to={"render"})
         shaders = [
             Albedo(),
             Normal(),
-            SoftLambertShader(apply_to={"render"}),
+            lambert,
             Alpha(apply_to={"render"}),
-            BackgroundColor(
-                color=bg_color,
-                apply_to={"render"},
-            ),
+        ]
+        if background:
+            shaders.append(
+                BackgroundColor(
+                    color=bg_color,
+                    apply_to={"render"},
+                ),
+            )
+        shaders += [
             Clamp(apply_to={"render"}),
             Antialias(apply_to={"render"}),
         ]

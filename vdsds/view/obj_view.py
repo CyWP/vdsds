@@ -8,6 +8,14 @@ from torch import Tensor
 
 from ..deformations.base import Deformation
 from ..rendering import Camera, LightSource, Renderer
+from ..rendering.shader import (
+    Albedo,
+    Alpha,
+    Antialias,
+    Clamp,
+    HalfLambertShader,
+    Normal,
+)
 from ..rendering.view_state import Overlay
 from ..representations.base import Model
 from ..utils.img import ImgUtils, Splimage
@@ -33,7 +41,10 @@ class ObjViewer:
         if bg_color is None:
             bg_color = [1.0, 1.0, 1.0]
         self.bg_color = torch.tensor(bg_color, device=self.camera.device)
-        self.renderer = Renderer.basic(self.bg_color)
+        # Half-Lambert (cosine remapped to [0, 1]) keeps the live view
+        # gentle and editing-friendly; other Renderer.basic callers
+        # (orbit, views) keep the default soft shading.
+        self.renderer = Renderer.basic(self.bg_color, shading="half")
         self.sensitivity = sensitivity
         self.rot_x: int = 0
         self.rot_y: int = 0
@@ -73,6 +84,14 @@ class ObjViewer:
         img.save(str(path))
         self._frame_idx += 1
 
+    def _evaluated_model(self) -> Model:
+        """The model (deformed per the current view, when applicable)."""
+        if isinstance(self.obj, Deformation):
+            if self.view_deformed:
+                return self.obj.deformed(self.camera)
+            return self.obj.model
+        return self.obj
+
     @torch.no_grad()
     def get_render(
         self, H: int, W: int, overlay: Overlay | None = None
@@ -82,18 +101,55 @@ class ObjViewer:
         self.check_rotation()
         self.check_roll()
         self.check_translation()
-        if isinstance(self.obj, Deformation):
-            if self.view_deformed:
-                model = self.obj.deformed(self.camera)
-            else:
-                model = self.obj.model
-        else:
-            model = self.obj
+        model = self._evaluated_model()
         render = self.renderer(model, self.camera, self.light)["render"]
         if overlay is not None:
             render = overlay.overlay(render)
         self._save_frame(render)
         return render
+
+    @property
+    def transparent_renderer(self) -> Renderer:
+        """Background-less variant of the viewer's render chain.
+
+        Same half-Lambert chain minus the BackgroundColor step, so the
+        rasterizer alpha channel survives (object pixels alpha 1,
+        background alpha 0) for transparent exports.
+        """
+        if not hasattr(self, "_transparent_renderer"):
+            shaders = [
+                Albedo(),
+                Normal(),
+                HalfLambertShader(apply_to={"render"}),
+                Alpha(apply_to={"render"}),
+                Clamp(apply_to={"render"}),
+                Antialias(apply_to={"render"}),
+            ]
+            self._transparent_renderer = Renderer(
+                shaders, device=self.camera.device
+            )
+        return self._transparent_renderer
+
+    @torch.no_grad()
+    def get_transparent_render(self, H: int, W: int) -> Float[Tensor, "B 4 H W"]:
+        """RGBA render without background compositing.
+
+        Same camera, light and shading as :meth:`get_render`, but the
+        BackgroundColor step is skipped: background pixels carry alpha 0
+        and the returned image is 4-channel. The overlay is not
+        composited (it is a viewport aid, not part of the model). Camera
+        bookkeeping (window size, rotation/roll/translation deltas) is
+        idempotent here, so calling this after a regular
+        :meth:`get_render` in the same frame tick reproduces that
+        frame's camera state exactly.
+        """
+        if H != self.camera.H or W != self.camera.W:
+            self.camera.set_window_size(H, W)
+        self.check_rotation()
+        self.check_roll()
+        self.check_translation()
+        model = self._evaluated_model()
+        return self.transparent_renderer(model, self.camera, self.light)["render"]
 
     def check_rotation(self):
         # Rotate if needed
