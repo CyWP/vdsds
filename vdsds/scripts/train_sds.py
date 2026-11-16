@@ -178,6 +178,8 @@ class TrainModelSDS(ViewableScript):
             "orbit": True,
             "check_batch_views": 2,
             "analyze": True,
+            # Mid-run deformation checkpoint interval (epochs; 0 = off).
+            "checkpoint_every": 500,
         },
         # Training-phase schedule: switches the shading/lighting profile,
         # the step mode ('accum' vs 'meshup' batch computing) and any other
@@ -261,7 +263,35 @@ class TrainModelSDS(ViewableScript):
                     optimizer, cameras, df, text_embeds, prompt_basis, len(prompts)
                 )
                 self.log(epoch, loss_dict)
+                self._checkpoint(epoch)
                 epoch += 1
+
+    def _checkpoint(self, epoch: int) -> None:
+        """Periodically saves the deformation checkpoint mid-run.
+
+        Every 'post.checkpoint_every' epochs the deformation (and logs,
+        when 'log.save') is written atomically into the run dir, so an
+        interrupted run keeps its progress. The final checkpoint written
+        by :meth:`finish` supersedes this one.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.checkpoint_every
+        if not every or every <= 0 or (epoch + 1) % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        run_dir = Path(run_dir)
+        run_dir.mkdir(exist_ok=True, parents=True)
+        file = run_dir / "deformation.vd3d"
+        tmp = file.with_suffix(".vd3d.tmp")
+        self.model.save(tmp)
+        tmp.replace(file)
+        if self.config.log.save and hasattr(self, "_logs"):
+            Config(self._logs).save(run_dir / "logs.yaml")
+        logger.info(f"Checkpointed deformation at epoch {epoch} -> {file}")
 
     def _build_schedule(self) -> list[tuple[int, dict[str, any] | None]]:
         """Resolves the phase schedule into (epochs, overrides) pairs.
