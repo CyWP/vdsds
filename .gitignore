@@ -93,3 +93,4 @@ dist/
 outputs/
 experiments/multi_gen_runs/
 meshup-replica/
+.agents/

@@ -28,6 +28,7 @@ from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
+from ..utils.view_prompts import ViewPromptSet
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
@@ -111,6 +112,15 @@ class TrainModelSDS(ViewableScript):
             # Extra strings appended to every prompt (e.g. rendering style
             # qualifiers like '4k', 'realistic', 'unreal engine').
             "extra": [],
+            # View-dependent prompts: every concept prompt is expanded into
+            # one variant per canonical view ("{prompt}, {view} view"), all
+            # variants are encoded once up front, and each render composites
+            # the embeddings for its camera (view weights x concept branch
+            # weights). Works with both 'sds' and 'bsd' diffusion losses.
+            "view_dependent": False,
+            "views": ["front", "side", "back", "top", "bottom"],
+            "view_mode": "mix",  # Options: 'mix', 'select'
+            "view_overlap": None,  # Angular falloff; None uses 'overlap'.
         },
         "loss": {
             "diffusion": 1.0,
@@ -509,59 +519,75 @@ class TrainModelSDS(ViewableScript):
             weighted.backward()
             loss_dict[f"{name}_loss"] = weighted.item()
 
+    def _extra_suffix(self) -> str:
+        """Renders prompt.extra into the suffix appended to every prompt."""
+        extra = self.config.prompt.extra
+        if isinstance(extra, str):
+            # CLI overrides arrive as strings; lists survive the JSON
+            # parse path.
+            extra = [extra.strip()] if extra.strip() else []
+        return ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
+
+    def _prompt_basis(self, num_text: int) -> SphericalGaussianBasis:
+        """BSD concept basis: one spherical Gaussian per concept prompt.
+
+        Centers each Gaussian on its prompt anchor (prompt.anchors) and
+        normalizes to a partition of unity.
+
+        Args:
+            num_text: Number of concept prompts to cover.
+
+        Returns:
+            out: Basis with one function per concept prompt.
+
+        Raises:
+            ValueError: Anchor count does not match the prompt count.
+        """
+        cfg = self.config.prompt
+        centroids = torch.tensor(cfg.anchors, dtype=torch.float32)
+        # A single anchor direction is commonly written flat ([x, y, z]);
+        # normalize to the (N, 3) convention.
+        if centroids.ndim == 1:
+            centroids = centroids[None]
+        if centroids.shape[0] != num_text:
+            raise ValueError(
+                f"prompt.anchors holds {centroids.shape[0]} anchor(s) "
+                f"but the prompt text encodes {num_text} concept "
+                "prompt(s); provide one (x, y, z) anchor per prompt, "
+                "e.g. [[0.0, 1.0, 0.0]] for a single prompt."
+            )
+        return SphericalGaussianBasis(
+            num_funcs=num_text,
+            num_dims=1,
+            batch_size=1,
+            sigma_overlap=cfg.overlap,
+            centroids=centroids,
+            normalize=True,
+        ).to(self.device)
+
     def get_text_embeds(
         self, df: DeepFloydGuidance
-    ) -> tuple[list[str], Float[Tensor, "..."], SphericalGaussianBasis | None]:
+    ) -> tuple[list[str], Float[Tensor, "..."] | ViewPromptSet, SphericalGaussianBasis | None]:
         cfg = self.config
         txt = cfg.prompt.text
+        # Strings count as a single prompt (len() would count characters).
+        concepts = list(txt) if isinstance(txt, list) else [txt]
+        if cfg.prompt.view_dependent:
+            return self.get_view_text_embeds(df, concepts)
         views = cfg.camera.views
         aug_views = cfg.camera.aug_views
         batch_size = views * (1 + aug_views)
-        # prompt.extra qualifiers are appended verbatim to every prompt.
-        # Accept a single string as one qualifier (CLI overrides arrive as
-        # strings; lists survive the JSON parse path).
-        extra = cfg.prompt.extra
-        if isinstance(extra, str):
-            extra = [extra.strip()] if extra.strip() else []
-        extra_suffix = (
-            ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
-        )
-        if isinstance(txt, list):
-            # MeshUp convention: the last prompt is kept raw (no rendering
-            # suffix); extras still apply to every prompt.
-            prompts = [
-                p + ", a 3d rendering" + extra_suffix
-                if i != len(txt) - 1
-                else p + extra_suffix
-                for i, p in enumerate(txt)
-            ]
-        else:
-            prompts = [txt + ", a 3d rendering" + extra_suffix]
+        extra_suffix = self._extra_suffix()
+        # MeshUp convention: the last prompt is kept raw (no rendering
+        # suffix); extras still apply to every prompt.
+        prompts = [
+            p + ", a 3d rendering" + extra_suffix
+            if i != len(concepts) - 1
+            else p + extra_suffix
+            for i, p in enumerate(concepts)
+        ]
         if cfg.diffusion.loss == "bsd":
-            # bsd blends one basis function per concept prompt; strings count
-            # as a single prompt (len() would count characters).
-            num_text = len(txt) if isinstance(txt, list) else 1
-            centroids = torch.tensor(cfg.prompt.anchors, dtype=torch.float32)
-            # A single anchor direction is commonly written flat ([x, y, z]);
-            # normalize to the (N, 3) convention, then validate against the
-            # function count with a useful message.
-            if centroids.ndim == 1:
-                centroids = centroids[None]
-            if centroids.shape[0] != num_text:
-                raise ValueError(
-                    f"prompt.anchors holds {centroids.shape[0]} anchor(s) "
-                    f"but the prompt text encodes {num_text} concept "
-                    "prompt(s); provide one (x, y, z) anchor per prompt, "
-                    "e.g. [[0.0, 1.0, 0.0]] for a single prompt."
-                )
-            basis = SphericalGaussianBasis(
-                num_funcs=num_text,
-                num_dims=1,
-                batch_size=1,
-                sigma_overlap=cfg.prompt.overlap,
-                centroids=centroids,
-                normalize=True,
-            ).to(self.device)
+            basis = self._prompt_basis(len(concepts))
             # Base prompt branch sits after the concept prompts and before
             # the empty uncond branch, so branch order matches the basis
             # columns plus the appended base weight.
@@ -586,6 +612,98 @@ class TrainModelSDS(ViewableScript):
             batch_size=batch_size,
         )
         return prompts, text_embeds, basis
+
+    def get_view_text_embeds(
+        self, df: DeepFloydGuidance, concepts: list[str]
+    ) -> tuple[list[str], ViewPromptSet, SphericalGaussianBasis | None]:
+        """Encodes the canonical-view prompt variants once at startup.
+
+        Every concept prompt is expanded into one variant per configured
+        canonical view ("{prompt}, {view} view"), plus the static branches
+        (optional base prompt, BSD blank branch) that do not vary with the
+        view. Static branches keep their fixed embeddings; each concept
+        branch's embedding is later composited per render from its view
+        sub-prompts weighted by (anchor alpha x view weight).
+
+        Args:
+            df: Diffusion guidance (used only for encoding here).
+            concepts: Undecorated concept prompt texts.
+
+        Returns:
+            out: (prompts, viewset, basis); prompts mirrors the flat path
+            (decorated concepts, then the static branch texts) so
+            num_prompts bookkeeping stays identical.
+        """
+        cfg = self.config
+        prompt_cfg = cfg.prompt
+        views = list(prompt_cfg.views)
+        extra_suffix = self._extra_suffix()
+        variant_texts = []
+        for i, p in enumerate(concepts):
+            # Same last-prompt-raw MeshUp convention as the flat path.
+            render_suffix = ", a 3d rendering" if i != len(concepts) - 1 else ""
+            variant_texts += [
+                f"{p}, {v} view" + render_suffix + extra_suffix for v in views
+            ]
+        static_texts = []
+        if cfg.diffusion.loss == "bsd":
+            # Static branches only exist in the BSD branch layout (same
+            # guard as the flat path: SDS ignores base/blank branches).
+            if prompt_cfg.base is not None:
+                static_texts.append(
+                    prompt_cfg.base + ", a 3d rendering" + extra_suffix
+                )
+            static_texts.append("")
+        basis = (
+            self._prompt_basis(len(concepts)) if cfg.diffusion.loss == "bsd" else None
+        )
+        negative_prompt = (
+            # One negative entry per encoded text (batch_size=1 below).
+            [prompt_cfg.negative] * (len(variant_texts) + len(static_texts))
+            if prompt_cfg.negative is not None
+            else None
+        )
+        overlap = (
+            prompt_cfg.view_overlap
+            if prompt_cfg.view_overlap is not None
+            else prompt_cfg.overlap
+        )
+        viewset = ViewPromptSet.build(
+            df,
+            variant_texts,
+            static_texts,
+            views,
+            negative_prompt=negative_prompt,
+            mode=prompt_cfg.view_mode,
+            sigma_overlap=overlap,
+        )
+        logger.info(
+            "Encoded view-dependent prompt cache: "
+            f"{len(concepts)} concept(s) x {len(views)} view(s) "
+            f"({viewset.embeds.shape[2]}x{viewset.embeds.shape[3]} each), "
+            f"mode '{viewset.mode}'."
+        )
+        prompts = concepts + static_texts
+        return prompts, viewset, basis
+
+    def view_directions(
+        self, cameras: list[tuple[Camera, Camera]]
+    ) -> Float[Tensor, "B 3"]:
+        """Unit camera-position directions from the mesh centroid.
+
+        One direction per render camera, pointing from the object center
+        toward the camera — the same frame as CANONICAL_VIEWS (validated
+        on the cow model: face-on view is -Z, dorsal/top view -Y).
+
+        Args:
+            cameras: Camera pairs (render, deformation) of this epoch.
+
+        Returns:
+            out: Unit directions for the render cameras.
+        """
+        center = self.model.model.centroid
+        dirs = torch.stack([rc.location for rc, _ in cameras], dim=0) - center
+        return dirs / dirs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
     def get_prompt_basis(
         self, basis_func: SphericalGaussianBasis, deltas: Float[Tensor, "N 3"]
@@ -665,6 +783,11 @@ class TrainModelSDS(ViewableScript):
         """
         cfg = self.config.diffusion
         if cfg.loss == "sds":
+            if isinstance(text_embeds, ViewPromptSet):
+                with torch.no_grad():
+                    text_embeds = text_embeds.sds_embeds(
+                        self.view_directions(cameras)
+                    )
             rt = df.SDS(renders, text_embeds, controller=None)
         else:
             with torch.no_grad():
@@ -672,6 +795,14 @@ class TrainModelSDS(ViewableScript):
                     [dc.location for rc, dc in cameras], dim=0
                 )
                 attn_alphas = self.get_prompt_basis(alpha_basis, deltas)
+                if isinstance(text_embeds, ViewPromptSet):
+                    # Concept branches get per-view composite embeddings;
+                    # static branches (base, blank) keep fixed embeddings.
+                    text_embeds = text_embeds.bsd_embeds(
+                        self.view_directions(cameras),
+                        attn_alphas,
+                        alpha_basis.num_funcs,
+                    )
             assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
                 f"render batch {renders.shape[0]} x {num_prompts + 1} branches "
                 f"!= embed rows {text_embeds.shape[0]}"
