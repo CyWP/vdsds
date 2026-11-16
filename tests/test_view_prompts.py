@@ -1,7 +1,12 @@
 import pytest
 import torch
+from types import SimpleNamespace
 
-from vdsds.utils.view_prompts import ViewPromptSet, canonical_directions
+from vdsds.utils.view_prompts import (
+    ViewPromptSet,
+    canonical_directions,
+    format_view_weights,
+)
 
 T, D = 2, 3  # token count / embed dim of the fake encoder
 VIEWS = ["front", "side", "top"]
@@ -37,6 +42,33 @@ def unit(vec):
 def test_unknown_view_name_raises():
     with pytest.raises(ValueError):
         canonical_directions(["front", "diagonal"])
+
+
+def test_format_view_weights():
+    vs = build()
+    weights = vs.view_weights(canonical_directions(["front"]))
+    text = format_view_weights(weights[0], vs.views, vs.mode)
+    assert text.startswith("view prompts (mix):")
+    assert "front 0.79" in text
+    assert "side 0.11" in text
+    assert "top 0.11" in text
+
+
+def test_viewer_overlay_hook():
+    from vdsds.scripts.train_sds import TrainModelSDS
+
+    inst = object.__new__(TrainModelSDS)
+    overlay = inst._viewer_overlay()
+    # No viewset yet (or view-dependent prompts off) -> nothing drawn.
+    assert overlay(None) is None
+    # With a viewset, the overlay formats the weights for the camera.
+    vs = build()
+    inst.viewset = vs
+    inst.model = SimpleNamespace(model=SimpleNamespace(centroid=torch.zeros(3)))
+    front_cam = SimpleNamespace(location=torch.tensor([0.0, 0.0, -2.0]))
+    text = overlay(front_cam)
+    assert text.startswith("view prompts (mix):")
+    assert "front 0.79" in text
 
 
 def test_build_shapes_and_layout():

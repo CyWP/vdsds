@@ -58,6 +58,27 @@ def canonical_directions(views: list[str]) -> Float[Tensor, "V 3"]:
     return torch.tensor([CANONICAL_VIEWS[v] for v in views], dtype=torch.float32)
 
 
+def format_view_weights(
+    weights: Float[Tensor, "V"],
+    views: list[str],
+    mode: str,
+) -> str:
+    """Formats canonical view weights as a compact overlay string.
+
+    Args:
+        weights: View weights for one direction (one row of
+            ViewPromptSet.view_weights output).
+
+    Returns:
+        out: e.g. "view prompts (mix): front 0.79  side 0.11  top 0.05
+        back 0.03  bottom 0.02".
+    """
+    parts = "  ".join(
+        f"{name} {weight:.2f}" for name, weight in zip(views, weights.tolist())
+    )
+    return f"view prompts ({mode}): {parts}"
+
+
 class ViewPromptSet:
     """Precomputed per-(concept, view) prompt embeddings and the mixing.
 

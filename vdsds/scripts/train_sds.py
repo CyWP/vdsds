@@ -1,7 +1,7 @@
 import logging
 import math
 import random
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ClassVar
 
@@ -28,7 +28,7 @@ from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
-from ..utils.view_prompts import ViewPromptSet
+from ..utils.view_prompts import ViewPromptSet, format_view_weights
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
@@ -237,6 +237,9 @@ class TrainModelSDS(ViewableScript):
         self.renderer = self.get_renderer()
         accum_steps = config.optim.accum_steps
         prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
+        # Kept for the live viewer's view-weights overlay (None without
+        # view-dependent prompts).
+        self.viewset = text_embeds if isinstance(text_embeds, ViewPromptSet) else None
         batch_size = config.camera.views * (1 + config.camera.aug_views)
         optimizer = torch.optim.Adam(
             [*self.model.get_parameters()],
@@ -685,6 +688,26 @@ class TrainModelSDS(ViewableScript):
         )
         prompts = concepts + static_texts
         return prompts, viewset, basis
+
+    def _viewer_overlay(self) -> Callable[[Camera], str | None] | None:
+        """Live canonical-view weights for the viewer's current camera.
+
+        Draws the view-prompt weights ("view prompts (mix): front 0.79
+        side 0.11 ...") onto the viewer frame while view-dependent
+        prompts are active; None before the cache is built or when
+        disabled, which draws nothing.
+        """
+        def overlay(camera: Camera) -> str | None:
+            viewset = getattr(self, "viewset", None)
+            if viewset is None:
+                return None
+            with torch.no_grad():
+                center = self.model.model.centroid
+                dirs = camera.location - center
+                weights = viewset.view_weights(dirs)[0]
+            return format_view_weights(weights, viewset.views, viewset.mode)
+
+        return overlay
 
     def view_directions(
         self, cameras: list[tuple[Camera, Camera]]
