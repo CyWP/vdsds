@@ -235,6 +235,186 @@ class ViewPromptSet:
             return onehot
         raise ValueError(f"View mode '{self.mode}' is invalid (use mix/select).")
 
+    def branch_embeds(
+        self, dirs: Float[Tensor, "B 3"], concept_weights: Float[Tensor, "B P"] | None = None
+    ) -> Float[Tensor, "V B T D"]:
+        """Conditioning embedding per view branch per render (concept-mixed).
+
+        One embedding per (view branch, render): the concept mix at that
+        view, without any view weighting — the raw material for score-space
+        Perp-Neg, where the combination step picks the positive branch and
+        orthogonalizes the rest.
+
+        Args:
+            dirs: Unit camera-position directions (B, 3); only used for the
+                batch size.
+            concept_weights: Per-concept branch weights; None mixes all
+                concepts uniformly.
+
+        Returns:
+            out: Branch embeddings, one row block per view.
+        """
+        dirs = self._flat_dirs(dirs)
+        if concept_weights is None:
+            concept_weights = torch.full(
+                (dirs.shape[0], self.num_concepts),
+                1.0 / self.num_concepts,
+                dtype=self.embeds.dtype,
+                device=self.embeds.device,
+            )
+        # (B,P) x (P,V,T,D) -> (V,B,T,D)
+        return torch.einsum("bp,pvtd->vbtd", concept_weights, self.embeds)
+
+    @staticmethod
+    def _flat_dirs(dirs: Float[Tensor, "B 3"]) -> Float[Tensor, "B 3"]:
+        if dirs.ndim == 1:
+            dirs = dirs[None]
+        return dirs.reshape(-1, 3)
+
+    @staticmethod
+    def _perp(
+        d: Float[Tensor, "B V ..."], d0: Float[Tensor, "B ..."]
+    ) -> Float[Tensor, "B V ..."]:
+        """Component of each direction orthogonal to the positive direction.
+
+        Perp-Neg's core operation, applied over the flattened trailing
+        dims per (batch, branch): perp(x, y) = x - (x.y / |y|^2) y.
+
+        Args:
+            d: Candidate directions (negatives), (B, V, ...).
+            d0: The positive direction per batch element, (B, ...).
+
+        Returns:
+            out: The orthogonal residuals, same shape as `d`; rows
+            parallel to d0 vanish.
+        """
+        # Flatten the trailing dims explicitly to (B, V, C): a partial
+        # reshape would leave the inner token dims unflattened.
+        lead = d.shape[:2]  # (B, V)
+        x = d.reshape(*lead, -1)
+        y = d0.reshape(d0.shape[0], -1)
+        y2 = y.pow(2).sum(-1, keepdim=True).clamp_min(1e-8)  # (B, 1)
+        xy = (x * y[:, None, :]).sum(-1, keepdim=True)  # (B, V, 1)
+        perp = x - (xy / y2[:, None, :]) * y[:, None, :]
+        return perp.reshape(d.shape)
+
+    def perpneg_plan(
+        self,
+        dirs: Float[Tensor, "B 3"],
+        weighting: str = "sphere",
+        scale: float = 1.5,
+    ) -> tuple[Float[Tensor, "B"], Float[Tensor, "B V"]]:
+        """Positive view branch and negative weights per render.
+
+        The positive branch is the nearest canonical view (argmax of the
+        view weights); every other view becomes a Perp-Neg negative. With
+        'fixed' weighting all negatives get -|scale| (paper-style); with
+        'sphere' the push is modulated by how far the camera sits from
+        each negative's canonical direction: exactly-on-canonical cameras
+        get the full negative push against every other view, while
+        in-between cameras soften it so the two nearest view prompts can
+        cooperate.
+
+        Args:
+            dirs: Unit camera-position directions (B, 3).
+            weighting: 'fixed' or 'sphere'.
+            scale: Negative weight magnitude (sign applied internally).
+
+        Returns:
+            out: (pos_idx, neg_weights); neg_weights is 0 at the positive
+            branch and negative elsewhere.
+        """
+        dirs = self._flat_dirs(dirs)
+        weights = self.view_weights(dirs)  # (B, V)
+        pos = weights.argmax(dim=-1)  # (B,)
+        if weighting == "fixed":
+            neg = torch.full_like(weights, -abs(scale))
+        elif weighting == "sphere":
+            neg = -abs(scale) * (1.0 - weights)
+        else:
+            raise ValueError(
+                f"Perp-Neg weighting '{weighting}' is invalid (use fixed/sphere)."
+            )
+        neg.scatter_(1, pos[:, None], 0.0)
+        return pos, neg
+
+    def perpneg_embeds(
+        self,
+        dirs: Float[Tensor, "B 3"],
+        concept_weights: Float[Tensor, "B P"] | None = None,
+        weighting: str = "sphere",
+        scale: float = 1.5,
+    ) -> Float[Tensor, "B T D"]:
+        """Embedding-space Perp-Neg composite for a render batch.
+
+        The cheap analog of the score-space algorithm, applied to the
+        precomputed embeddings: start from the uncond embedding, add the
+        nearest view's (concept-mixed) embedding direction as the
+        positive, and add the other views' directions with their
+        components parallel to the positive removed, scaled by the
+        negative weights. Heuristic by construction (the UNet is
+        nonlinear in the embeddings and nothing here is
+        image-conditioned), but zero extra UNet cost and usable in both
+        diffusion paths.
+
+        Args:
+            dirs: Unit camera-position directions (B, 3).
+            concept_weights: Per-concept branch weights; None mixes all
+                concepts uniformly.
+            weighting: Negative weighting, 'fixed' or 'sphere'.
+            scale: Negative weight magnitude.
+
+        Returns:
+            out: One composite conditioning embedding per render.
+        """
+        dirs = self._flat_dirs(dirs)
+        _, neg = self.perpneg_plan(dirs, weighting, scale)  # (B, V)
+        branches = self.branch_embeds(dirs, concept_weights)  # (V, B, T, D)
+        # Rearrange to (B, V, T, D) for the per-render combination.
+        d = branches.permute(1, 0, 2, 3) - self.uncond[None, None]
+        pos = self.view_weights(dirs).argmax(dim=-1)  # (B,)
+        d0 = d[torch.arange(dirs.shape[0], device=d.device), pos]  # (B, T, D)
+        perp = self._perp(d, d0)  # (B, V, T, D)
+        # Positive term at unit weight: the CFG guidance scale downstream
+        # amplifies positive and negative terms alike.
+        return d0 + (neg[:, :, None, None] * perp).sum(dim=1) + self.uncond
+
+    def bsd_perpneg_branches(
+        self,
+        dirs: Float[Tensor, "B 3"],
+        weighting: str = "sphere",
+        scale: float = 1.5,
+    ) -> Float[Tensor, "F B T D"]:
+        """Per-concept embedding-space Perp-Neg branch embeddings.
+
+        The BSD branch layout's counterpart of :meth:`perpneg_embeds`,
+        applied per concept independently so the activation-replace
+        machinery over concepts stays intact while the view dimension
+        becomes Perp-Neg conditioned: each concept branch's embedding is
+        that concept's nearest view plus the orthogonalized negatives of
+        its other views.
+
+        Args:
+            dirs: Unit camera-position directions (B, 3).
+            weighting: Negative weighting, 'fixed' or 'sphere'.
+            scale: Negative weight magnitude.
+
+        Returns:
+            out: One Perp-Neg composite per (concept branch, render).
+        """
+        dirs = self._flat_dirs(dirs)
+        _, neg = self.perpneg_plan(dirs, weighting, scale)  # (B, V)
+        pos = self.view_weights(dirs).argmax(dim=-1)  # (B,)
+        rows = torch.arange(dirs.shape[0], device=dirs.device)
+        out = []
+        for c in range(self.num_concepts):
+            d = self.embeds[c][None] - self.uncond[None]  # (1, V, T, D)
+            d = d.expand(dirs.shape[0], -1, -1, -1)  # (B, V, T, D)
+            d0 = d[rows, pos]  # (B, T, D)
+            perp = self._perp(d, d0)  # (B, V, T, D)
+            out.append(d0 + (neg[:, :, None, None] * perp).sum(dim=1) + self.uncond)
+        return torch.stack(out, dim=0)  # (F, B, T, D)
+
     def composite(
         self,
         dirs: Float[Tensor, "B 3"],
@@ -299,6 +479,7 @@ class ViewPromptSet:
         dirs: Float[Tensor, "B 3"],
         attn_alphas: Float[Tensor, "B P-1"],
         num_funcs: int,
+        branches: Float[Tensor, "F B T D"] | None = None,
     ) -> Float[Tensor, "PpBplusB T D"]:
         """BSD branch layout: per-view composite embeddings per branch.
 
@@ -316,6 +497,10 @@ class ViewPromptSet:
                 base?): concept columns first, then the optional base
                 weight column; the blank branch carries no alpha.
             num_funcs: Number of concept branches (leading alpha columns).
+            branches: Optional precomputed concept-branch embeddings
+                (F, B, T, D) — e.g. the embedding-space Perp-Neg composites
+                from :meth:`bsd_perpneg_branches` — replacing the default
+                anchor-alpha x view-weight composites.
 
         Returns:
             out: Text embeddings for ActvnReplace, uncond rows last.
@@ -328,13 +513,21 @@ class ViewPromptSet:
                 f"static branch(es) (minus the blank branch) expect "
                 f"{expected}."
             )
-        concept_weights = attn_alphas[:, :num_funcs]  # (B, F)
-        branches = torch.einsum(
-            "bf,bv,fvtd->fbtd",
-            concept_weights,
-            self.view_weights(dirs),  # (B, V)
-            self.embeds,
-        )  # (F, B, T, D)
+        if branches is not None:
+            if branches.shape[0] != num_funcs or branches.shape[1] != dirs.shape[0]:
+                raise ValueError(
+                    f"branches must be (F, B, T, D) with F == {num_funcs} "
+                    f"concept branches and B == {dirs.shape[0]} renders; "
+                    f"got {tuple(branches.shape)}."
+                )
+        else:
+            concept_weights = attn_alphas[:, :num_funcs]  # (B, F)
+            branches = torch.einsum(
+                "bf,bv,fvtd->fbtd",
+                concept_weights,
+                self.view_weights(dirs),  # (B, V)
+                self.embeds,
+            )  # (F, B, T, D)
         static = self.static_embeds[:, None].expand(
             self.num_static, dirs.shape[0], *self.static_embeds.shape[1:]
         )  # (S, B, T, D)

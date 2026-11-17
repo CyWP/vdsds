@@ -118,9 +118,21 @@ class TrainModelSDS(ViewableScript):
             # the embeddings for its camera (view weights x concept branch
             # weights). Works with both 'sds' and 'bsd' diffusion losses.
             "view_dependent": False,
-            "views": ["front", "side", "back", "top", "bottom"],
+            # Orbit views only: 'top'/'bottom' stay defined in
+            # CANONICAL_VIEWS but are off by default for now.
+            "views": ["front", "side", "back"],
             "view_mode": "mix",  # Options: 'mix', 'select'
             "view_overlap": None,  # Angular falloff; None uses 'overlap'.
+            # Perp-Neg (Armandpour et al. 2023) style conditioning: the
+            # nearest view's prompt is the positive; the other views'
+            # directions push orthogonally to it as negatives.
+            # 'score': faithful score-space version (one extra UNet pass
+            # per view; SDS loss only). 'embed': the heuristic applied to
+            # the precomputed embeddings (no extra cost; both losses).
+            "perpneg": False,
+            "perpneg_mode": "score",  # Options: 'score', 'embed'
+            "perpneg_scale": 1.5,  # Negative weight magnitude.
+            "perpneg_weighting": "sphere",  # Options: 'fixed', 'sphere'
         },
         "loss": {
             "diffusion": 1.0,
@@ -835,13 +847,54 @@ class TrainModelSDS(ViewableScript):
             out: Diffusion loss ('loss_sds').
         """
         cfg = self.config.diffusion
+        prompt_cfg = self.config.prompt
         if cfg.loss == "sds":
             if isinstance(text_embeds, ViewPromptSet):
+                dirs = self.view_directions(cameras)
                 with torch.no_grad():
-                    text_embeds = text_embeds.sds_embeds(
-                        self.view_directions(cameras)
+                    if prompt_cfg.perpneg:
+                        pos, neg = text_embeds.perpneg_plan(
+                            dirs,
+                            prompt_cfg.perpneg_weighting,
+                            prompt_cfg.perpneg_scale,
+                        )
+                if prompt_cfg.perpneg:
+                    if prompt_cfg.perpneg_mode == "score":
+                        # Branch embeddings are constants; compute them
+                        # outside no_grad so the UNet loss call below sees
+                        # the differentiable renders (the combination math
+                        # itself runs under no_grad inside).
+                        branches = text_embeds.branch_embeds(dirs)
+                        rt = df.PerpNegSDS(
+                            renders,
+                            branches,
+                            text_embeds.uncond,
+                            pos,
+                            neg,
+                        )
+                    else:
+                        with torch.no_grad():
+                            composite = text_embeds.perpneg_embeds(
+                                dirs,
+                                weighting=prompt_cfg.perpneg_weighting,
+                                scale=prompt_cfg.perpneg_scale,
+                            )
+                            uncond = text_embeds.uncond[None].expand(
+                                composite.shape[0], -1, -1
+                            )
+                            embeds = torch.cat([composite, uncond], dim=0)
+                        rt = df.SDS(renders, embeds, controller=None)
+                else:
+                    with torch.no_grad():
+                        text_embeds = text_embeds.sds_embeds(dirs)
+                    rt = df.SDS(renders, text_embeds, controller=None)
+            else:
+                if prompt_cfg.perpneg:
+                    raise ValueError(
+                        "prompt.perpneg requires view-dependent prompts "
+                        "(prompt.view_dependent: true)."
                     )
-            rt = df.SDS(renders, text_embeds, controller=None)
+                rt = df.SDS(renders, text_embeds, controller=None)
         else:
             with torch.no_grad():
                 deltas = self.model.model.centroid - torch.stack(
@@ -851,10 +904,25 @@ class TrainModelSDS(ViewableScript):
                 if isinstance(text_embeds, ViewPromptSet):
                     # Concept branches get per-view composite embeddings;
                     # static branches (base, blank) keep fixed embeddings.
+                    if prompt_cfg.perpneg:
+                        if prompt_cfg.perpneg_mode != "embed":
+                            raise ValueError(
+                                "Perp-Neg 'score' mode requires the 'sds' "
+                                "diffusion loss; use perpneg_mode 'embed' "
+                                "with 'bsd'."
+                            )
+                        branches = text_embeds.bsd_perpneg_branches(
+                            self.view_directions(cameras),
+                            weighting=prompt_cfg.perpneg_weighting,
+                            scale=prompt_cfg.perpneg_scale,
+                        )
+                    else:
+                        branches = None
                     text_embeds = text_embeds.bsd_embeds(
                         self.view_directions(cameras),
                         attn_alphas,
                         alpha_basis.num_funcs,
+                        branches=branches,
                     )
             assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
                 f"render batch {renders.shape[0]} x {num_prompts + 1} branches "

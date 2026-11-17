@@ -7,6 +7,7 @@ from vdsds.utils.view_prompts import (
     canonical_directions,
     format_view_weights,
 )
+from vdsds.utils.deepfloyd import perpneg_combine
 
 T, D = 2, 3  # token count / embed dim of the fake encoder
 VIEWS = ["front", "side", "top"]
@@ -192,3 +193,164 @@ def test_save_load_roundtrip(tmp_path):
     assert torch.equal(loaded.uncond, vs.uncond)
     assert loaded.views == vs.views and loaded.mode == vs.mode
     assert loaded.view_weights(canonical_directions(["front"])).shape == (1, 3)
+
+
+def direct_set():
+    """Hand-built cache with non-collinear 2D embeddings (T=1, D=2).
+
+    Concept 0: front=[1,0], side=[0,1], top=[0,0.5]; concept 1 mirrors it.
+    uncond = [0,0]. Non-collinear so perp components are non-trivial.
+    """
+    embeds = torch.tensor(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 0.5]],  # concept 0
+            [[2.0, 0.0], [0.0, 2.0], [0.0, 1.0]],  # concept 1
+        ]
+    )[None].reshape(2, 3, 1, 2)
+    return ViewPromptSet(
+        embeds=embeds,
+        static_embeds=torch.zeros(1, 1, 2),
+        uncond=torch.zeros(1, 2),
+        texts=["f", "s", "t", "f", "s", "t"],
+        static_texts=[""],
+        views=list(VIEWS),
+    )
+
+
+def test_perp_orthogonal_to_positive_multitoken():
+    # Invariant test with real multi-token shapes (T=2): every perp must
+    # be orthogonal to the positive direction. Catches partial flattening
+    # bugs that single-token fixtures hide.
+    vs = build()
+    torch.manual_seed(0)
+    d = torch.randn(4, len(VIEWS), T, D)
+    d0 = torch.randn(4, T, D)
+    perp = vs._perp(d, d0)
+    assert perp.shape == d.shape
+    # Orthogonality holds over the flattened (T, D) score vector — per-
+    # token dots cancel pairwise, so assert the global dot.
+    dots = (perp * d0[:, None]).sum(-1).sum(-1)  # (B, V)
+    assert torch.allclose(dots, torch.zeros_like(dots), atol=1e-3)
+
+
+def test_perpneg_plan():
+    vs = build()
+    front = canonical_directions(["front"])
+    pos, neg = vs.perpneg_plan(front, weighting="fixed", scale=1.5)
+    assert pos.item() == 0
+    assert torch.allclose(neg, torch.tensor([[0.0, -1.5, -1.5]]))
+    pos, neg = vs.perpneg_plan(front, weighting="sphere", scale=1.0)
+    w = vs.view_weights(front)[0]
+    expected = -1.0 * (1.0 - w)
+    expected[0] = 0.0
+    assert torch.allclose(neg[0], expected)
+    with pytest.raises(ValueError):
+        vs.perpneg_plan(front, weighting="bogus")
+
+
+def test_perpneg_embeds_exact_front():
+    vs = direct_set()
+    front = canonical_directions(["front"])
+    # Concept 0 only, so the hand-computed numbers hold.
+    composite = vs.perpneg_embeds(
+        front,
+        concept_weights=torch.tensor([[1.0, 0.0]]),
+        weighting="fixed",
+        scale=1.0,
+    )
+    # d_front = [1,0]; perp(d_side) = [0,1]; perp(d_top) = [0,0.5];
+    # composite = E_front - 1*perp_side - 1*perp_top + U.
+    assert torch.allclose(composite[0], torch.tensor([1.0, -1.5]))
+
+
+def test_perpneg_embeds_parallel_negative_vanishes():
+    vs = direct_set()
+    # Concept-mixed view directions are all collinear for this camera:
+    # front-direction only → perp of everything parallel to it is ~0, so
+    # the composite equals the positive embedding itself.
+    composite = vs.perpneg_embeds(
+        canonical_directions(["front"]),
+        concept_weights=torch.tensor([[1.0, 0.0]]),
+        weighting="fixed",
+        scale=5.0,
+    )
+    # Still not zero here (side/top are orthogonal in embedding space),
+    # but a purely parallel negative must leave the composite unchanged:
+    collinear = ViewPromptSet(
+        embeds=torch.tensor([[[3.0, 0.0], [1.5, 0.0]]])[None].reshape(1, 2, 1, 2),
+        static_embeds=torch.zeros(1, 1, 2),
+        uncond=torch.zeros(1, 2),
+        texts=["f", "s"],
+        static_texts=[""],
+        views=["front", "side"],
+    )
+    out = collinear.perpneg_embeds(
+        canonical_directions(["front"]),
+        weighting="fixed",
+        scale=10.0,
+    )
+    assert torch.allclose(out[0], torch.tensor([3.0, 0.0]))
+
+
+def test_perpneg_combine_math():
+    # V=2 branches, B=2 renders, 3-channel scores.
+    eps_branches = torch.tensor(
+        [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],  # branch 0
+            [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],  # branch 1
+        ]
+    )
+    eps_uncond = torch.zeros(2, 3)
+    pos_idx = torch.tensor([0, 1])  # render 1's positive is branch 1
+    neg_weights = torch.tensor([[0.0, -1.0], [-1.0, 0.0]])
+    out = perpneg_combine(eps_branches, eps_uncond, pos_idx, neg_weights, 2.0)
+    # Both renders: positive direction [1,0,0] at scale 2, negative
+    # [0,1,0] fully orthogonal -> subtracted at weight -1.
+    assert torch.allclose(out, torch.tensor([[2.0, -1.0, 0.0], [2.0, -1.0, 0.0]]))
+
+
+def test_perpneg_combine_parallel_negative():
+    eps_branches = torch.tensor([[[2.0, 0.0, 0.0]]])  # parallel to positive
+    eps_uncond = torch.zeros(1, 3)
+    out = perpneg_combine(
+        eps_branches,
+        eps_uncond,
+        torch.tensor([0]),
+        torch.tensor([[0.0, -1.0]]),
+        1.0,
+    )
+    # Parallel negative -> perp = 0 -> plain CFG result.
+    assert torch.allclose(out, torch.tensor([[2.0, 0.0, 0.0]]))
+
+
+def test_bsd_perpneg_branches_and_layout():
+    vs = direct_set()
+    front = canonical_directions(["front"])
+    branches = vs.bsd_perpneg_branches(front, weighting="fixed", scale=1.0)
+    assert branches.shape == (2, 1, 1, 2)
+    # Concept 0: E_front - perp(side) - perp(top) + U = [1, -1.5].
+    assert torch.allclose(branches[0, 0, 0], torch.tensor([1.0, -1.5]))
+    # Concept 1: d = 2x concept 0's -> same directions, same perp -> [2, -3].
+    assert torch.allclose(branches[1, 0, 0], torch.tensor([2.0, -3.0]))
+    # Feeding them through bsd_embeds keeps the BSD row layout intact.
+    attn_alphas = torch.tensor([[0.6, 0.4]])  # 2 concepts + blank(0 cols extra)
+    vs_static = direct_set()
+    embeds = vs_static.bsd_embeds(
+        front, attn_alphas, num_funcs=2, branches=branches
+    )
+    # Rows: [c0 x B, c1 x B, blank x B, uncond x B].
+    assert torch.allclose(embeds[0, 0], branches[0, 0, 0])
+    assert torch.allclose(embeds[1, 0], branches[1, 0, 0])
+    assert torch.allclose(embeds[2, 0], torch.zeros(1, 2))  # blank branch
+    assert torch.allclose(embeds[3, 0], torch.zeros(1, 2))  # uncond (U = 0)
+
+
+def test_branch_embeds_concept_mix():
+    vs = build()
+    branches = vs.branch_embeds(canonical_directions(["front"]))
+    assert branches.shape == (len(VIEWS), 1, T, D)
+    # Uniform concept mix: branch v = 0.5*(fill v) + 0.5*(fill V+v) = v + V/2.
+    assert torch.allclose(
+        branches[:, 0, 0, 0],
+        torch.arange(len(VIEWS), dtype=torch.float32) + len(VIEWS) / 2,
+    )
