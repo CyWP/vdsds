@@ -192,6 +192,9 @@ class TrainModelSDS(ViewableScript):
             "analyze": True,
             # Mid-run deformation checkpoint interval (epochs; 0 = off).
             "checkpoint_every": 500,
+            # Snapshot render interval (epochs; 0 = off): fixed cameras
+            # into run_dir/renders/ for mid-run visual judgment.
+            "render_every": 100,
         },
         # Training-phase schedule: switches the shading/lighting profile,
         # the step mode ('accum' vs 'meshup' batch computing) and any other
@@ -276,7 +279,64 @@ class TrainModelSDS(ViewableScript):
                 )
                 self.log(epoch, loss_dict)
                 self._checkpoint(epoch)
+                self._render_hook(epoch)
                 epoch += 1
+
+    _snapshot_cameras: ClassVar[dict[str, float]] = {
+        # Camera azimuths about CameraCoordinates._up applied to the
+        # default camera (sits at -Z): empirically +pi/2 puts the camera
+        # at -X and -pi/2 at +X. Order in the snapshot set:
+        # face-on, a 45-degree blend view, both flanks, and the rear.
+        "front": 0.0,
+        "diag": torch.pi / 4,
+        "sideL": torch.pi / 2,
+        "sideR": -torch.pi / 2,
+        "back": torch.pi,
+    }
+
+    def _render_hook(self, epoch: int) -> None:
+        """Renders fixed snapshot cameras every post.render_every epochs.
+
+        One image per camera into the run dir's renders/ subfolder, so
+        long runs can be judged (and stopped) mid-training instead of
+        reading the diffusion loss as a proxy. The deformation is
+        evaluated per camera, so the snapshots show the per-view geometry
+        directly; with two concepts on opposite flank anchors, the
+        sideL/sideR pair is the differentiation signal.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.render_every
+        if not every or every <= 0 or epoch % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        if not hasattr(self, "_snapshot_renderer"):
+            self._snapshot_renderer = Renderer.basic(
+                bg_color=torch.ones(3, device=self.device), device=self.device
+            )
+        out_dir = Path(run_dir) / "renders"
+        out_dir.mkdir(exist_ok=True, parents=True)
+        up = CameraCoordinates._up.to(self.device)
+        radius = self._radius_max
+        with torch.no_grad():
+            for name, angle in self._snapshot_cameras.items():
+                co = CameraCoordinates(
+                    Q=Quaternion.from_axis_angle(
+                        up, torch.tensor(angle, device=self.device)
+                    ),
+                    radius=radius,
+                )
+                cam = Camera(H=384, W=384, F=60, co=co).to(self.device)
+                light = LightSource.from_camera(
+                    cam, strength=torch.tensor(1.5, device=self.device)
+                )
+                rgb = self._snapshot_renderer.render(
+                    self.model.deformed(cam), cam, light
+                )["render"][:, :3]
+                Splimage(rgb).save(out_dir / f"e{epoch:04d}_{name}.png")
 
     def _checkpoint(self, epoch: int) -> None:
         """Periodically saves the deformation checkpoint mid-run.
