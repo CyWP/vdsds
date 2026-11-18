@@ -30,14 +30,32 @@ logger = logging.getLogger(__name__)
 # rear, the '-Y' camera the dorsal outline (the renderer's world up,
 # UP = [0, -1, 0]), '+Y' the belly, and '+/-X' the profile flanks. 'side'
 # is a single direction: both left and right cameras fall off into the
-# same 'side view' prompt.
+# same 'side view' prompt. The diagonals sit between the horizontal
+# canonical views at 45-degree orbit spacing: frontDiag between front and
+# side, backDiag between side and back.
 CANONICAL_VIEWS: dict[str, tuple[float, float, float]] = {
     "front": (0.0, 0.0, -1.0),
+    "frontDiag": (0.5**0.5, 0.0, -(0.5**0.5)),
     "back": (0.0, 0.0, 1.0),
+    "backDiag": (0.5**0.5, 0.0, 0.5**0.5),
     "side": (1.0, 0.0, 0.0),
     "top": (0.0, -1.0, 0.0),
     "bottom": (0.0, 1.0, 0.0),
 }
+
+# Text qualifier per canonical view, as appended to the concept prompt
+# ("{concept}, {qualifier}"). Diffusion models know photographic terms
+# far better than geometric labels, so the diagonals use the standard
+# three-quarter phrasing; everything else defaults to "{name} view".
+VIEW_QUALIFIERS: dict[str, str] = {
+    "frontDiag": "three-quarter view",
+    "backDiag": "rear three-quarter view",
+}
+
+
+def view_qualifier(view: str) -> str:
+    """Text qualifier appended to the concept prompt for a canonical view."""
+    return VIEW_QUALIFIERS.get(view, f"{view} view")
 
 
 def canonical_directions(views: list[str]) -> Float[Tensor, "V 3"]:

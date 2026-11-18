@@ -28,7 +28,7 @@ from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
-from ..utils.view_prompts import ViewPromptSet, format_view_weights
+from ..utils.view_prompts import ViewPromptSet, format_view_weights, view_qualifier
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
@@ -290,12 +290,15 @@ class TrainModelSDS(ViewableScript):
     _snapshot_cameras: ClassVar[dict[str, float]] = {
         # Camera azimuths about CameraCoordinates._up applied to the
         # default camera (sits at -Z): empirically +pi/2 puts the camera
-        # at -X and -pi/2 at +X. Order in the snapshot set:
-        # face-on, a 45-degree blend view, both flanks, and the rear.
+        # at -X and -pi/2 at +X. frontDiag/backDiag mirror the canonical
+        # diagonal directions (between -Z/+X and +Z/+X); 'diag' and
+        # 'sideL' keep monitoring the unconfigured -X side.
         "front": 0.0,
+        "frontDiag": -torch.pi / 4,
         "diag": torch.pi / 4,
         "sideL": torch.pi / 2,
         "sideR": -torch.pi / 2,
+        "backDiag": 5 * torch.pi / 4,
         "back": torch.pi,
     }
 
@@ -763,7 +766,8 @@ class TrainModelSDS(ViewableScript):
             # Same last-prompt-raw MeshUp convention as the flat path.
             render_suffix = ", a 3d rendering" if i != len(concepts) - 1 else ""
             variant_texts += [
-                f"{p}, {v} view" + render_suffix + extra_suffix for v in views
+                f"{p}, {view_qualifier(v)}" + render_suffix + extra_suffix
+                for v in views
             ]
         static_texts = []
         if cfg.diffusion.loss == "bsd":

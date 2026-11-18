@@ -45,6 +45,23 @@ def test_unknown_view_name_raises():
         canonical_directions(["front", "diagonal"])
 
 
+def test_view_qualifier_mapping():
+    from vdsds.utils.view_prompts import view_qualifier
+
+    assert view_qualifier("front") == "front view"
+    assert view_qualifier("frontDiag") == "three-quarter view"
+    assert view_qualifier("backDiag") == "rear three-quarter view"
+
+
+def test_diag_directions_between_canonicals():
+    dirs = canonical_directions(["front", "frontDiag", "side", "backDiag", "back"])
+    assert torch.allclose(dirs[1], (dirs[0] + dirs[2]) / (dirs[0] + dirs[2]).norm(), atol=1e-6)
+    assert torch.allclose(dirs[3], (dirs[2] + dirs[4]) / (dirs[2] + dirs[4]).norm(), atol=1e-6)
+    # Even 45-degree spacing over the front half of the orbit.
+    dots = (dirs[:-1] * dirs[1:]).sum(-1)
+    assert torch.allclose(dots, dots[0])
+
+
 def test_format_view_weights():
     vs = build()
     weights = vs.view_weights(canonical_directions(["front"]))
