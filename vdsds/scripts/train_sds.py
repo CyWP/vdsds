@@ -139,6 +139,11 @@ class TrainModelSDS(ViewableScript):
             "jacobian": 0.0,  # Weight-space prior; swept to suppress motion.
             "composed_jacobian": 500.0,  # Per-entry reg at rendered view dirs.
             "laplacian": 0.0,
+            # 'deformed': cotan-Laplacian of the composed deformation field
+            # sampled around the sphere (default; the per-function Poisson
+            # variant stays near zero for affine per-function fields).
+            "laplacian_mode": "deformed",  # Options: 'deformed', 'functions'
+            "laplacian_eval_points": 4,  # Sampled directions ('deformed').
             "volume": 0.0,
             "volume_eval_points": 32,
             "view_dependence": 3000.0,  # Anti-inflation of the view basis.
@@ -596,10 +601,20 @@ class TrainModelSDS(ViewableScript):
                 cfg.loss.view_dependence * accum_steps,
             )
         if cfg.loss.laplacian != 0.0:
-            regs["laplacian"] = (
-                self.laplacian_loss(),
-                cfg.loss.laplacian * accum_steps,
-            )
+            if cfg.loss.laplacian_mode == "deformed":
+                regs["laplacian"] = (
+                    self.deformed_laplacian_loss(),
+                    cfg.loss.laplacian * accum_steps,
+                )
+            elif cfg.loss.laplacian_mode == "functions":
+                regs["laplacian"] = (
+                    self.laplacian_loss(),
+                    cfg.loss.laplacian * accum_steps,
+                )
+            else:
+                raise ValueError(
+                    f"Laplacian mode '{cfg.loss.laplacian_mode}' is invalid."
+                )
         if cfg.loss.volume != 0.0:
             regs["volume"] = (
                 self.volume_loss(),
@@ -1206,6 +1221,36 @@ class TrainModelSDS(ViewableScript):
             .permute(1, 0, 2)
         )
         return (Y**2).mean()
+
+    def deformed_laplacian_loss(self) -> Float[Tensor, ""]:
+        """Cotan-Laplacian energy of the deformation field, sampled views.
+
+        Penalizes non-smooth displacement: for each camera direction
+        sampled around the sphere, the cotan-Laplacian (of the source
+        mesh, from the mesh class) is applied to the deformed vertices'
+        displacement from the source. High-frequency ripple artifacts
+        (folds, sag) carry most of the energy while large-scale legitimate
+        displacements contribute comparatively little, so the term smooths
+        the field without suppressing the shape change.
+
+        Uses the 'deformed' Laplacian mode: the composed deformation is
+        measured directly. The 'functions' mode (:meth:`laplacian_loss`)
+        penalizes each basis function's Poisson-solved field instead, but
+        those fields start affine and its magnitude stays negligible.
+
+        Returns:
+            out: Scalar loss, mean over the sampled directions.
+        """
+        n = self.config.loss.laplacian_eval_points
+        V_src = self.model.model.V
+        L = self.model.model.L_cotan_csr  # (V, V), fetched once per call
+        loss = torch.zeros((), device=V_src.device)
+        for _ in range(n):
+            cam = Camera.random_rot().to(self.device)
+            V_def = self.model.deformed(cam).V  # (N, 3)
+            Y = torch.sparse.mm(L, V_def - V_src)  # (N, 3)
+            loss = loss + (Y**2).mean()
+        return loss / n
 
     def _adapt_dist(self, epoch: int):
         """Rescales the camera radius range to the current mesh bounding box.
