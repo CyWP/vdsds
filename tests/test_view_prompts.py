@@ -45,6 +45,40 @@ def test_unknown_view_name_raises():
         canonical_directions(["front", "diagonal"])
 
 
+def test_deform_view_mask():
+    from vdsds.deformations.vd_jacobian_full_deform import (
+        VDFullJacobianDeformation,
+    )
+
+    inst = object.__new__(VDFullJacobianDeformation)
+    # None -> full orbit: everything deforms.
+    inst.deform_range = None
+    deltas = torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    assert torch.allclose(inst.view_mask(deltas), torch.ones(2, 1))
+
+    # Single azimuth 0 (front camera): delta = +Z deforms fully, the
+    # +X camera (delta = -X) is gated out.
+    inst.deform_range = 0.0
+    inst.deform_range_sigma = torch.pi / 8
+    front = torch.tensor([[0.0, 0.0, 1.0]])
+    side = torch.tensor([[-1.0, 0.0, 0.0]])  # camera at +X -> delta -X
+    assert torch.allclose(inst.view_mask(front), torch.ones(1, 1), atol=1e-5)
+    assert inst.view_mask(side).item() < 0.01
+
+    # Range [-pi/4, pi/4]: flat 1 inside, taper outside.
+    inst.deform_range = (-torch.pi / 4, torch.pi / 4)
+    in_range = torch.tensor([[0.0, 0.0, 1.0]])  # theta 0
+    at_edge = torch.tensor([[2**0.5 / 2, 0.0, 2**0.5 / 2]])  # theta -pi/4
+    outside = torch.tensor([[0.0, 0.0, -1.0]])  # camera at +Z -> theta pi (6 sigma out)
+    assert torch.allclose(inst.view_mask(in_range), torch.ones(1, 1))
+    assert torch.allclose(inst.view_mask(at_edge), torch.ones(1, 1), atol=1e-5)
+    assert inst.view_mask(outside).item() < 0.01
+
+    with pytest.raises(ValueError):
+        inst.deform_range = (1.0, 0.0)
+        inst.view_mask(front)
+
+
 def test_view_qualifier_mapping():
     from vdsds.utils.view_prompts import view_qualifier
 

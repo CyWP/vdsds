@@ -1047,7 +1047,22 @@ class TrainModelSDS(ViewableScript):
                 point_upwards=cfg.point_upwards,
             ).to(self.device)
         elif cfg.view_source == "orbit":
-            angle = torch.rand((), device=self.device) * 2 * torch.pi
+            # With a deform_range, sample only inside the gate so the SDS
+            # gradients act where the deformation is allowed; the orbit
+            # angle is the negated camera-position azimuth (empirical
+            # mapping: orbit angle +pi/2 puts the camera at -X).
+            dr = getattr(self.model, "deform_range", None)
+            if dr is None:
+                angle = torch.rand((), device=self.device) * 2 * torch.pi
+            elif torch.is_tensor(dr) or isinstance(dr, (list, tuple)):
+                a, b = float(dr[0]), float(dr[1])
+                theta = torch.rand((), device=self.device) * (b - a) + a
+                angle = -theta
+            else:
+                theta = (torch.rand((), device=self.device) * 2 - 1) * (
+                    self.model.deform_range_sigma
+                ) + float(dr)
+                angle = -theta
             Q_orbit = Quaternion.from_axis_angle(
                 CameraCoordinates._up.to(self.device), angle
             ).to(self.device)
