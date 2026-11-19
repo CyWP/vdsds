@@ -36,6 +36,27 @@ from .orbit import OrbitFrames
 logger = logging.getLogger(__name__)
 
 
+def _cotan_degree_inv(mesh) -> Float[Tensor, "V"]:
+    """Inverse cotan degrees of a mesh, for neighbor-averaging.
+
+    The mesh cotan Laplacian is L = W - D (W = cotan weights, D = positive
+    per-vertex degree diagonal), so D = -diag(L). Neither sparse backend
+    exposes .diagonal() in this torch build, so the diagonal is read from
+    the COO index/value arrays directly.
+
+    Args:
+        mesh: Mesh exposing L_cotan (coalesced COO, V x V).
+
+    Returns:
+        out: 1 / D_ii per vertex.
+    """
+    L = mesh.L_cotan.coalesce()
+    idx = L.indices()
+    vals = L.values()
+    diag = vals[idx[0] == idx[1]]
+    return 1.0 / (-diag).clamp_min(1e-8)
+
+
 class TrainModelSDS(ViewableScript):
     # Shading profiles place the shader/lighting keys that differ between the
     # legacy renderer setup and the MeshUp-parity renderer setup (see
@@ -139,11 +160,16 @@ class TrainModelSDS(ViewableScript):
             "jacobian": 0.0,  # Weight-space prior; swept to suppress motion.
             "composed_jacobian": 500.0,  # Per-entry reg at rendered view dirs.
             "laplacian": 0.0,
-            # 'deformed': cotan-Laplacian of the composed deformation field
+            # 'deformed': cotan-Laplacian difference against the base mesh
             # sampled around the sphere (default; the per-function Poisson
             # variant stays near zero for affine per-function fields).
             "laplacian_mode": "deformed",  # Options: 'deformed', 'functions'
             "laplacian_eval_points": 4,  # Sampled directions ('deformed').
+            # Neighbor-averaging steps smoothing the per-vertex Laplacian
+            # difference before the penalty (0 = off). Smoothed targets
+            # region-level deviation from the base mesh, letting local
+            # detail ridges through.
+            "laplacian_smooth": 0,
             "volume": 0.0,
             "volume_eval_points": 32,
             "view_dependence": 3000.0,  # Anti-inflation of the view basis.
@@ -1242,15 +1268,16 @@ class TrainModelSDS(ViewableScript):
         return (Y**2).mean()
 
     def deformed_laplacian_loss(self) -> Float[Tensor, ""]:
-        """Cotan-Laplacian energy of the deformation field, sampled views.
+        """Region-level Laplacian difference against the base mesh.
 
-        Penalizes non-smooth displacement: for each camera direction
-        sampled around the sphere, the cotan-Laplacian (of the source
-        mesh, from the mesh class) is applied to the deformed vertices'
-        displacement from the source. High-frequency ripple artifacts
-        (folds, sag) carry most of the energy while large-scale legitimate
-        displacements contribute comparatively little, so the term smooths
-        the field without suppressing the shape change.
+        For each camera direction sampled around the sphere, the
+        displacement field (deformed minus source vertices) is first
+        smoothed over the mesh with `loss.laplacian_smooth`
+        neighbor-averaging steps, then the source mesh's cotan-Laplacian
+        is applied and penalized. Smoothing first means the penalty
+        targets region-level deviation of the surface quality from the
+        base mesh ("maintain similarish Laplacian values in general
+        regions") while local detail ridges pass through.
 
         Uses the 'deformed' Laplacian mode: the composed deformation is
         measured directly. The 'functions' mode (:meth:`laplacian_loss`)
@@ -1261,13 +1288,22 @@ class TrainModelSDS(ViewableScript):
             out: Scalar loss, mean over the sampled directions.
         """
         n = self.config.loss.laplacian_eval_points
+        steps = int(self.config.loss.laplacian_smooth)
         V_src = self.model.model.V
         L = self.model.model.L_cotan_csr  # (V, V), fetched once per call
+        dinv = _cotan_degree_inv(self.model.model)[:, None]
         loss = torch.zeros((), device=V_src.device)
         for _ in range(n):
             cam = Camera.random_rot().to(self.device)
-            V_def = self.model.deformed(cam).V  # (N, 3)
-            Y = torch.sparse.mm(L, V_def - V_src)  # (N, 3)
+            D = self.model.deformed(cam).V - V_src  # (N, 3) displacement
+            # Smooth the displacement field over the mesh FIRST, then take
+            # its Laplacian: a localized spike spreads into a low bump
+            # whose Laplacian is small, so the penalty sees only
+            # region-level deviation. (Smoothing the Laplacian residual
+            # itself does not damp its peaks.)
+            for _ in range(steps):
+                D = D + dinv * torch.sparse.mm(L, D)
+            Y = torch.sparse.mm(L, D)  # (N, 3)
             loss = loss + (Y**2).mean()
         return loss / n
 

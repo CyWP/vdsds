@@ -45,6 +45,37 @@ def test_unknown_view_name_raises():
         canonical_directions(["front", "diagonal"])
 
 
+def test_deformed_laplacian_smoothing_damps_spikes():
+    """Smoothing the displacement field before the Laplacian must reduce
+    the penalized energy of a localized spike."""
+    import torch
+
+    from vdsds.scripts.train_sds import _cotan_degree_inv
+
+    L = torch.tensor(
+        [
+            [-2.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            [1.0, -2.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, -2.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, -2.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, -2.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, -2.0],
+        ]
+    )
+    dinv = _cotan_degree_inv(type("M", (), {"L_cotan": L.to_sparse().coalesce()}))[
+        :, None
+    ]
+    spike = torch.tensor([[10.0], [0.0], [0.0], [0.0], [0.0], [0.0]])
+    raw = torch.mm(L, spike)
+    D = spike
+    for _ in range(2):
+        D = D + dinv * torch.mm(L, D)
+    smoothed = torch.mm(L, D)
+    assert smoothed.pow(2).sum() < raw.pow(2).sum()
+    # And the field peak itself is damped by the smoothing steps.
+    assert D.abs().max() < spike.abs().max()
+
+
 def test_deform_view_mask():
     from vdsds.deformations.vd_jacobian_full_deform import (
         VDFullJacobianDeformation,
