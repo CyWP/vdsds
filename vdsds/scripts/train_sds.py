@@ -140,20 +140,9 @@ class TrainModelSDS(ViewableScript):
             # the embeddings for its camera (view weights x concept branch
             # weights). Works with both 'sds' and 'bsd' diffusion losses.
             "view_dependent": False,
-            # The 8 orbit views: 45-degree spacing over the full azimuth
-            # ring (both flanks and all four diagonals), so every camera
-            # is within 22.5 degrees of a canonical view. 'top'/'bottom'
-            # stay defined but off.
-            "views": [
-                "front",
-                "frontDiag",
-                "side",
-                "backDiag",
-                "back",
-                "backDiagL",
-                "sideL",
-                "frontDiagL",
-            ],
+            # 5-view orbit set (the validated configuration): the 8-view
+            # ring made optimization visibly worse on hound->hippo.
+            "views": ["front", "frontDiag", "side", "backDiag", "back"],
             "view_mode": "mix",  # Options: 'mix', 'select'
             "view_overlap": None,  # Angular falloff; None uses 'overlap'.
             # Perp-Neg (Armandpour et al. 2023) style conditioning: the
