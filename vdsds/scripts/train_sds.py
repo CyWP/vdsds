@@ -140,9 +140,12 @@ class TrainModelSDS(ViewableScript):
             # the embeddings for its camera (view weights x concept branch
             # weights). Works with both 'sds' and 'bsd' diffusion losses.
             "view_dependent": False,
-            # 5-view orbit set (the validated configuration): the 8-view
-            # ring made optimization visibly worse on hound->hippo.
-            "views": ["front", "frontDiag", "side", "backDiag", "back"],
+            # 4-view cardinal set: contradiction-free conditioning - the
+            # 5-view ring left the -X flank with a ~50/50 'front'+'back'
+            # mix and no side qualifier (a confirmed artifact source);
+            # every camera here is within 45 degrees of a compatible
+            # view with no opposing pair.
+            "views": ["front", "side", "back", "sideL"],
             "view_mode": "mix",  # Options: 'mix', 'select'
             "view_overlap": None,  # Angular falloff; None uses 'overlap'.
             # Perp-Neg (Armandpour et al. 2023) style conditioning: the
@@ -521,11 +524,17 @@ class TrainModelSDS(ViewableScript):
         rebuilt so the shader chain picks up the new shading mode.
         """
         profile = phase.pop("profile", None)
-        if profile is not None and profile != "none":
-            if profile not in self._shading_profiles:
-                raise ValueError(f"Shading profile '{profile}' is invalid.")
-            for section, values in self._shading_profiles[profile].items():
-                self.config[section].update(values)
+        if profile is not None and profile != getattr(self, "_current_profile", None):
+            if profile != "none":
+                if profile not in self._shading_profiles:
+                    raise ValueError(f"Shading profile '{profile}' is invalid.")
+                for section, values in self._shading_profiles[profile].items():
+                    self.config[section].update(values)
+                # Rebuild only on an actual profile change: frequent phase
+                # alternation would otherwise recreate the nvdiffrast
+                # context hundreds of times.
+                self.renderer = self.get_renderer()
+            self._current_profile = profile
         self.config.update(phase)
         # LR may arrive nested (Dict wrapping splits dotted keys) or dotted.
         lr = phase.get("optim.lr")
@@ -873,8 +882,16 @@ class TrainModelSDS(ViewableScript):
         extra_suffix = self._extra_suffix()
         variant_texts = []
         for i, p in enumerate(concepts):
-            # Same last-prompt-raw MeshUp convention as the flat path.
-            render_suffix = ", a 3d rendering" if i != len(concepts) - 1 else ""
+            # MeshUp's last-prompt-raw rule only makes sense when the last
+            # concept is a distinct prompt; for duplicated-identical
+            # prompts it would give the two object halves different render
+            # suffixes, so all variants get the suffix there.
+            distinct = len(set(concepts)) > 1
+            render_suffix = (
+                ", a 3d rendering"
+                if (distinct or i != len(concepts) - 1)
+                else ""
+            )
             variant_texts += [
                 f"{p}, {view_qualifier(v)}" + render_suffix + extra_suffix
                 for v in views
