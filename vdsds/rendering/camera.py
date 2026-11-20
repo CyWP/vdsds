@@ -67,11 +67,18 @@ class Camera:
         Zn: float = 0.1,
         Zf: float = 100.0,
         co: CameraCoordinates = None,
+        orthographic: bool = False,
+        ortho_scale: float = 1.5,
     ):
         self.F = F
         self.Zn = Zn
         self.Zf = Zf
         self.co = CameraCoordinates() if co is None else co
+        # Orthographic rendering: 'ortho_scale' is the vertical world
+        # extent covered by the frame (horizontal extends by W/H); the
+        # radius then only positions the camera for lighting/z-range.
+        self.orthographic = orthographic
+        self.ortho_scale = ortho_scale
 
         self.set_window_size(H, W)
 
@@ -152,6 +159,21 @@ class Camera:
 
     @property
     def projection(self) -> Float[Tensor, "4 4"]:
+        if self.orthographic:
+            s = self.ortho_scale / 2
+            sx = s * (self.W / self.H)
+            A = -2.0 / (self.Zf - self.Zn)
+            B = -(self.Zf + self.Zn) / (self.Zf - self.Zn)
+            return torch.tensor(
+                [
+                    [1.0 / sx, 0.0, 0.0, 0.0],
+                    [0.0, -1.0 / s, 0.0, 0.0],
+                    [0.0, 0.0, A, B],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                dtype=self.dtype,
+                device=self.device,
+            )
         fx = self.Fx
         fy = self.Fx
 
@@ -251,7 +273,17 @@ class Camera:
         self.co.radius *= exp(-depth * 0.1)
 
     def copy(self) -> Camera:
-        return Camera(self.H, self.W, self.F, self.Zn, self.Zf, self.co.copy())
+        out = Camera(
+            self.H,
+            self.W,
+            self.F,
+            self.Zn,
+            self.Zf,
+            self.co.copy(),
+            orthographic=self.orthographic,
+            ortho_scale=self.ortho_scale,
+        )
+        return out
 
     def clone(self) -> Camera:
         return self.copy()

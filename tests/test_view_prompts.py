@@ -76,6 +76,19 @@ def test_deformed_laplacian_smoothing_damps_spikes():
     assert D.abs().max() < spike.abs().max()
 
 
+    def test_ortho_projection_matrix():
+        from vdsds.rendering.camera import Camera
+
+        cam = Camera(H=384, W=384, F=60, orthographic=True, ortho_scale=2.0)
+        P = cam.projection
+        # Constant w row: no perspective divide.
+        assert torch.allclose(P[3], torch.tensor([0.0, 0.0, 0.0, 1.0]))
+        # Vertical extent 2.0: y = +1 (top) maps to -1 (image-top flip).
+        assert torch.isclose(P[1, 1], torch.tensor(-1.0))
+        # Horizontal extent 2.0 * (W/H) = 2.0 for a square frame.
+        assert torch.isclose(P[0, 0], torch.tensor(1.0))
+
+
 def test_deform_view_mask():
     from vdsds.deformations.vd_jacobian_full_deform import (
         VDFullJacobianDeformation,

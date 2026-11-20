@@ -202,6 +202,11 @@ class TrainModelSDS(ViewableScript):
             "jitter_range": math.pi / 4,
             "adapt_dist": False,  # MeshUp-style per-epoch distance rescale.
             "force_deformation_alignment": False,
+            # Orthographic rendering: distortion-free camera (fills the
+            # frame regardless of distance). ortho_scale None auto-fits
+            # the source mesh bounding box (+ margin) at startup.
+            "orthographic": False,
+            "ortho_scale": None,
         },
         "shader": {
             "resize": True,
@@ -276,6 +281,12 @@ class TrainModelSDS(ViewableScript):
             torch.backends.cudnn.deterministic = True
         self._radius_min = config.camera.radius_min
         self._radius_max = config.camera.radius_max
+        if config.camera.orthographic and config.camera.ortho_scale is None:
+            # Auto-fit: cover the source mesh bounding box (+25% margin
+            # for deformation growth).
+            V = self.model.model.V
+            extent = (V.amax(0) - V.amin(0)).abs().max()
+            self.config.camera.ortho_scale = float(extent) * 1.25
         self.model.train(
             model=config.optim.train_model,
             centroids=config.optim.train_centroids,
@@ -363,7 +374,14 @@ class TrainModelSDS(ViewableScript):
                     ),
                     radius=radius,
                 )
-                cam = Camera(H=384, W=384, F=60, co=co).to(self.device)
+                cam = Camera(
+                    H=384,
+                    W=384,
+                    F=60,
+                    co=co,
+                    orthographic=self.config.camera.orthographic,
+                    ortho_scale=self.config.camera.ortho_scale or 1.5,
+                ).to(self.device)
                 light = LightSource.from_camera(
                     cam, strength=torch.tensor(1.5, device=self.device)
                 )
@@ -1072,6 +1090,16 @@ class TrainModelSDS(ViewableScript):
                 radius=radius,
                 point_upwards=cfg.point_upwards,
             ).to(self.device)
+        if cfg.view_source == "random":
+            return Camera.random_rot(
+                H=cfg.H,
+                W=cfg.W,
+                F=F,
+                Zn=cfg.Zn,
+                Zf=cfg.Zf,
+                radius=radius,
+                point_upwards=cfg.point_upwards,
+            ).to(self.device)
         elif cfg.view_source == "orbit":
             # With a deform_range, sample only inside the gate so the SDS
             # gradients act where the deformation is allowed; the orbit
@@ -1099,6 +1127,8 @@ class TrainModelSDS(ViewableScript):
                 Zn=cfg.Zn,
                 Zf=cfg.Zf,
                 co=CameraCoordinates(radius=radius, Q=Q_orbit),
+                orthographic=cfg.camera.orthographic,
+                ortho_scale=cfg.camera.ortho_scale or 1.5,
             ).to(self.device)
             e_angle = (
                 torch.rand((), device=self.device)
@@ -1180,6 +1210,10 @@ class TrainModelSDS(ViewableScript):
         if cfg.post.orbit:
             orbit_cfg = {
                 "model": cfg.model,
+                "camera": {
+                    "orthographic": cfg.camera.orthographic,
+                    "ortho_scale": cfg.camera.ortho_scale,
+                },
                 "path": {
                     "model": deformation_file,
                     "out_dir": run_dir,
