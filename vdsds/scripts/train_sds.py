@@ -28,6 +28,7 @@ from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
+from ..utils.video import write_video
 from ..utils.view_prompts import ViewPromptSet, format_view_weights, view_qualifier
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
@@ -231,6 +232,12 @@ class TrainModelSDS(ViewableScript):
             # Snapshot render interval (epochs; 0 = off): fixed cameras
             # into run_dir/renders/ for mid-run visual judgment.
             "render_every": 100,
+            # Short orbit video interval (epochs; 0 = off): the in-memory
+            # model rendered from a front-starting orbit into
+            # run_dir/orbits/.
+            "orbit_every": 200,
+            # Frame count of each periodic orbit video.
+            "orbit_frames": 120,
         },
         # Training-phase schedule: switches the shading/lighting profile,
         # the step mode ('accum' vs 'meshup' batch computing) and any other
@@ -322,7 +329,66 @@ class TrainModelSDS(ViewableScript):
                 self.log(epoch, loss_dict)
                 self._checkpoint(epoch)
                 self._render_hook(epoch)
+                self._orbit_hook(epoch)
                 epoch += 1
+
+    def _orbit_hook(self, epoch: int) -> None:
+        """Writes a short orbit video of the current model periodically.
+
+        Every post.orbit_every epochs, post.orbit_frames frames of the
+        in-memory deformed model (no reload) are rendered from a
+        front-starting orbit and written to the run dir's orbits/
+        subfolder. Unlike the finish() orbit, statics are skipped —
+        this is a progress artifact, not a deliverable.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.orbit_every
+        if not every or every <= 0 or epoch % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        out_dir = Path(run_dir) / "orbits"
+        out_dir.mkdir(exist_ok=True, parents=True)
+        frames = int(self.config.post.orbit_frames)
+        device = self.device
+        up = CameraCoordinates._up.to(device)
+        Q_step = Quaternion.from_axis_angle(
+            up, torch.tensor(2 * torch.pi / frames, device=device)
+        )
+        camera = Camera(
+            H=384,
+            W=384,
+            F=60,
+            co=CameraCoordinates(radius=self._radius_max),
+            orthographic=self.config.camera.orthographic,
+            ortho_scale=self.config.camera.ortho_scale or 1.5,
+        ).to(device)
+        if not hasattr(self, "_snapshot_renderer"):
+            self._snapshot_renderer = Renderer.basic(
+                bg_color=torch.ones(3, device=device), device=device
+            )
+
+        def orbit_frames():
+            for _ in range(frames):
+                deformed = self.model.deformed(camera)
+                light = LightSource.from_camera(
+                    camera, strength=torch.tensor(1.5, device=device)
+                )
+                rgb = self._snapshot_renderer.render(deformed, camera, light)[
+                    "render"
+                ][:, :3]
+                yield Splimage(rgb)
+                camera.co.Q *= Q_step
+
+        with torch.no_grad():
+            write_video(
+                orbit_frames(),
+                out_dir / f"orbit_e{epoch:05d}.mp4",
+                fps=30,
+            )
 
     _snapshot_cameras: ClassVar[dict[str, float]] = {
         # Camera azimuths about CameraCoordinates._up applied to the
@@ -1127,8 +1193,8 @@ class TrainModelSDS(ViewableScript):
                 Zn=cfg.Zn,
                 Zf=cfg.Zf,
                 co=CameraCoordinates(radius=radius, Q=Q_orbit),
-                orthographic=cfg.camera.orthographic,
-                ortho_scale=cfg.camera.ortho_scale or 1.5,
+                orthographic=cfg.orthographic,
+                ortho_scale=cfg.ortho_scale or 1.5,
             ).to(self.device)
             e_angle = (
                 torch.rand((), device=self.device)
