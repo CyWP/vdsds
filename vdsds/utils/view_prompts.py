@@ -39,6 +39,9 @@ CANONICAL_VIEWS: dict[str, tuple[float, float, float]] = {
     "back": (0.0, 0.0, 1.0),
     "backDiag": (0.5**0.5, 0.0, 0.5**0.5),
     "side": (1.0, 0.0, 0.0),
+    "sideL": (-1.0, 0.0, 0.0),
+    "backDiagL": (-(0.5**0.5), 0.0, 0.5**0.5),
+    "frontDiagL": (-(0.5**0.5), 0.0, -(0.5**0.5)),
     "top": (0.0, -1.0, 0.0),
     "bottom": (0.0, 1.0, 0.0),
 }
@@ -46,10 +49,14 @@ CANONICAL_VIEWS: dict[str, tuple[float, float, float]] = {
 # Text qualifier per canonical view, as appended to the concept prompt
 # ("{concept}, {qualifier}"). Diffusion models know photographic terms
 # far better than geometric labels, so the diagonals use the standard
-# three-quarter phrasing; everything else defaults to "{name} view".
+# three-quarter phrasing; mirrored views reuse the symmetric labels
+# ('side'/'sideL' both read "side view"). Everything else defaults to
+# "{name} view".
 VIEW_QUALIFIERS: dict[str, str] = {
     "frontDiag": "three-quarter view",
     "backDiag": "rear three-quarter view",
+    "frontDiagL": "three-quarter view",
+    "backDiagL": "rear three-quarter view",
 }
 
 

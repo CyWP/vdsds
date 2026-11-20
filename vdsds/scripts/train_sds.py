@@ -135,14 +135,25 @@ class TrainModelSDS(ViewableScript):
             # qualifiers like '4k', 'realistic', 'unreal engine').
             "extra": [],
             # View-dependent prompts: every concept prompt is expanded into
-            # one variant per canonical view ("{prompt}, {view} view"), all
+            # one variant per canonical view ("{prompt}, {qualifier}"), all
             # variants are encoded once up front, and each render composites
             # the embeddings for its camera (view weights x concept branch
             # weights). Works with both 'sds' and 'bsd' diffusion losses.
             "view_dependent": False,
-            # Orbit views only: 'top'/'bottom' stay defined in
-            # CANONICAL_VIEWS but are off by default for now.
-            "views": ["front", "side", "back"],
+            # The 8 orbit views: 45-degree spacing over the full azimuth
+            # ring (both flanks and all four diagonals), so every camera
+            # is within 22.5 degrees of a canonical view. 'top'/'bottom'
+            # stay defined but off.
+            "views": [
+                "front",
+                "frontDiag",
+                "side",
+                "backDiag",
+                "back",
+                "backDiagL",
+                "sideL",
+                "frontDiagL",
+            ],
             "view_mode": "mix",  # Options: 'mix', 'select'
             "view_overlap": None,  # Angular falloff; None uses 'overlap'.
             # Perp-Neg (Armandpour et al. 2023) style conditioning: the
@@ -393,16 +404,16 @@ class TrainModelSDS(ViewableScript):
     _snapshot_cameras: ClassVar[dict[str, float]] = {
         # Camera azimuths about CameraCoordinates._up applied to the
         # default camera (sits at -Z): empirically +pi/2 puts the camera
-        # at -X and -pi/2 at +X. frontDiag/backDiag mirror the canonical
-        # diagonal directions (between -Z/+X and +Z/+X); 'diag' and
-        # 'sideL' keep monitoring the unconfigured -X side.
+        # at -X and -pi/2 at +X. Named after the canonical view each
+        # camera corresponds to (the full 8-view orbit ring).
         "front": 0.0,
         "frontDiag": -torch.pi / 4,
-        "diag": torch.pi / 4,
-        "sideL": torch.pi / 2,
-        "sideR": -torch.pi / 2,
+        "side": -torch.pi / 2,
         "backDiag": 5 * torch.pi / 4,
         "back": torch.pi,
+        "backDiagL": 3 * torch.pi / 4,
+        "sideL": torch.pi / 2,
+        "frontDiagL": torch.pi / 4,
     }
 
     def _render_hook(self, epoch: int) -> None:
