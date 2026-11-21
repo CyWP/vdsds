@@ -1,7 +1,7 @@
 import logging
 import math
 import random
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ClassVar
 
@@ -28,11 +28,34 @@ from ..utils.img import ImgUtils, Splimage
 from ..utils.quaternion import Quaternion
 from ..utils.resize_right import resize
 from ..utils.spherical_basis import SphericalGaussianBasis
+from ..utils.video import write_video
+from ..utils.view_prompts import ViewPromptSet, format_view_weights, view_qualifier
 from .analyze import AnalyzeDeformation
 from .base import ViewableScript
 from .orbit import OrbitFrames
 
 logger = logging.getLogger(__name__)
+
+
+def _cotan_degree_inv(mesh) -> Float[Tensor, "V"]:
+    """Inverse cotan degrees of a mesh, for neighbor-averaging.
+
+    The mesh cotan Laplacian is L = W - D (W = cotan weights, D = positive
+    per-vertex degree diagonal), so D = -diag(L). Neither sparse backend
+    exposes .diagonal() in this torch build, so the diagonal is read from
+    the COO index/value arrays directly.
+
+    Args:
+        mesh: Mesh exposing L_cotan (coalesced COO, V x V).
+
+    Returns:
+        out: 1 / D_ii per vertex.
+    """
+    L = mesh.L_cotan.coalesce()
+    idx = L.indices()
+    vals = L.values()
+    diag = vals[idx[0] == idx[1]]
+    return 1.0 / (-diag).clamp_min(1e-8)
 
 
 class TrainModelSDS(ViewableScript):
@@ -111,12 +134,46 @@ class TrainModelSDS(ViewableScript):
             # Extra strings appended to every prompt (e.g. rendering style
             # qualifiers like '4k', 'realistic', 'unreal engine').
             "extra": [],
+            # View-dependent prompts: every concept prompt is expanded into
+            # one variant per canonical view ("{prompt}, {qualifier}"), all
+            # variants are encoded once up front, and each render composites
+            # the embeddings for its camera (view weights x concept branch
+            # weights). Works with both 'sds' and 'bsd' diffusion losses.
+            "view_dependent": False,
+            # 4-view cardinal set: contradiction-free conditioning - the
+            # 5-view ring left the -X flank with a ~50/50 'front'+'back'
+            # mix and no side qualifier (a confirmed artifact source);
+            # every camera here is within 45 degrees of a compatible
+            # view with no opposing pair.
+            "views": ["front", "side", "back", "sideL"],
+            "view_mode": "mix",  # Options: 'mix', 'select'
+            "view_overlap": None,  # Angular falloff; None uses 'overlap'.
+            # Perp-Neg (Armandpour et al. 2023) style conditioning: the
+            # nearest view's prompt is the positive; the other views'
+            # directions push orthogonally to it as negatives.
+            # 'score': faithful score-space version (one extra UNet pass
+            # per view; SDS loss only). 'embed': the heuristic applied to
+            # the precomputed embeddings (no extra cost; both losses).
+            "perpneg": False,
+            "perpneg_mode": "score",  # Options: 'score', 'embed'
+            "perpneg_scale": 1.5,  # Negative weight magnitude.
+            "perpneg_weighting": "sphere",  # Options: 'fixed', 'sphere'
         },
         "loss": {
             "diffusion": 1.0,
             "jacobian": 0.0,  # Weight-space prior; swept to suppress motion.
             "composed_jacobian": 500.0,  # Per-entry reg at rendered view dirs.
             "laplacian": 0.0,
+            # 'deformed': cotan-Laplacian difference against the base mesh
+            # sampled around the sphere (default; the per-function Poisson
+            # variant stays near zero for affine per-function fields).
+            "laplacian_mode": "deformed",  # Options: 'deformed', 'functions'
+            "laplacian_eval_points": 4,  # Sampled directions ('deformed').
+            # Neighbor-averaging steps smoothing the per-vertex Laplacian
+            # difference before the penalty (0 = off). Smoothed targets
+            # region-level deviation from the base mesh, letting local
+            # detail ridges through.
+            "laplacian_smooth": 0,
             "volume": 0.0,
             "volume_eval_points": 32,
             "view_dependence": 3000.0,  # Anti-inflation of the view basis.
@@ -149,6 +206,11 @@ class TrainModelSDS(ViewableScript):
             "jitter_range": math.pi / 4,
             "adapt_dist": False,  # MeshUp-style per-epoch distance rescale.
             "force_deformation_alignment": False,
+            # Orthographic rendering: distortion-free camera (fills the
+            # frame regardless of distance). ortho_scale None auto-fits
+            # the source mesh bounding box (+ margin) at startup.
+            "orthographic": False,
+            "ortho_scale": None,
         },
         "shader": {
             "resize": True,
@@ -168,6 +230,17 @@ class TrainModelSDS(ViewableScript):
             "orbit": True,
             "check_batch_views": 2,
             "analyze": True,
+            # Mid-run deformation checkpoint interval (epochs; 0 = off).
+            "checkpoint_every": 500,
+            # Snapshot render interval (epochs; 0 = off): fixed cameras
+            # into run_dir/renders/ for mid-run visual judgment.
+            "render_every": 100,
+            # Short orbit video interval (epochs; 0 = off): the in-memory
+            # model rendered from a front-starting orbit into
+            # run_dir/orbits/.
+            "orbit_every": 200,
+            # Frame count of each periodic orbit video.
+            "orbit_frames": 120,
         },
         # Training-phase schedule: switches the shading/lighting profile,
         # the step mode ('accum' vs 'meshup' batch computing) and any other
@@ -218,6 +291,12 @@ class TrainModelSDS(ViewableScript):
             torch.backends.cudnn.deterministic = True
         self._radius_min = config.camera.radius_min
         self._radius_max = config.camera.radius_max
+        if config.camera.orthographic and config.camera.ortho_scale is None:
+            # Auto-fit: cover the source mesh bounding box (+25% margin
+            # for deformation growth).
+            V = self.model.model.V
+            extent = (V.amax(0) - V.amin(0)).abs().max()
+            self.config.camera.ortho_scale = float(extent) * 1.25
         self.model.train(
             model=config.optim.train_model,
             centroids=config.optim.train_centroids,
@@ -227,6 +306,9 @@ class TrainModelSDS(ViewableScript):
         self.renderer = self.get_renderer()
         accum_steps = config.optim.accum_steps
         prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
+        # Kept for the live viewer's view-weights overlay (None without
+        # view-dependent prompts).
+        self.viewset = text_embeds if isinstance(text_embeds, ViewPromptSet) else None
         batch_size = config.camera.views * (1 + config.camera.aug_views)
         optimizer = torch.optim.Adam(
             [*self.model.get_parameters()],
@@ -248,7 +330,167 @@ class TrainModelSDS(ViewableScript):
                     optimizer, cameras, df, text_embeds, prompt_basis, len(prompts)
                 )
                 self.log(epoch, loss_dict)
+                self._checkpoint(epoch)
+                self._render_hook(epoch)
+                self._orbit_hook(epoch)
                 epoch += 1
+
+    def _orbit_hook(self, epoch: int) -> None:
+        """Writes a short orbit video of the current model periodically.
+
+        Every post.orbit_every epochs, post.orbit_frames frames of the
+        in-memory deformed model (no reload) are rendered from a
+        front-starting orbit and written to the run dir's orbits/
+        subfolder. Unlike the finish() orbit, statics are skipped —
+        this is a progress artifact, not a deliverable.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.orbit_every
+        if not every or every <= 0 or epoch % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        out_dir = Path(run_dir) / "orbits"
+        out_dir.mkdir(exist_ok=True, parents=True)
+        frames = int(self.config.post.orbit_frames)
+        camera = self._snapshot_camera()
+        Q_step = Quaternion.from_axis_angle(
+            CameraCoordinates._up.to(camera.device),
+            torch.tensor(2 * torch.pi / frames, device=camera.device),
+        )
+
+        def orbit_frames():
+            for _ in range(frames):
+                light = self._snapshot_light(camera)
+                rgb = self._snapshot_renderer().render(
+                    self.model.deformed(camera), camera, light
+                )["render"][:, :3]
+                yield Splimage(rgb)
+                camera.co.Q *= Q_step
+
+        with torch.no_grad():
+            write_video(
+                orbit_frames(),
+                out_dir / f"orbit_e{epoch:05d}.mp4",
+                fps=30,
+            )
+
+    def _snapshot_renderer(self) -> Renderer:
+        """Lazily created shared renderer for snapshot/orbit artifacts."""
+        if not hasattr(self, "__snapshot_renderer"):
+            self.__snapshot_renderer = Renderer.basic(
+                bg_color=torch.ones(3, device=self.device), device=self.device
+            )
+        return self.__snapshot_renderer
+
+    def _snapshot_camera(self, azimuth: float = 0.0) -> Camera:
+        """Fixed diagnostic camera at an orbit azimuth (0 = front).
+
+        Args:
+            azimuth: Orbit azimuth in radians about the world-up axis
+            (empirically +pi/2 puts the camera at -X).
+
+        Returns:
+            out: 384x384 camera at ``self._radius_max`` with the
+            configured orthographic settings.
+        """
+        co = CameraCoordinates(
+            Q=Quaternion.from_axis_angle(
+                CameraCoordinates._up.to(self.device),
+                torch.tensor(azimuth, device=self.device),
+            ),
+            radius=self._radius_max,
+        )
+        return Camera(
+            H=384,
+            W=384,
+            F=60,
+            co=co,
+            orthographic=self.config.camera.orthographic,
+            ortho_scale=self.config.camera.ortho_scale or 1.5,
+        ).to(self.device)
+
+    def _snapshot_light(self, camera: Camera) -> LightSource:
+        """Camera-aligned diagnostic light for snapshot/orbit artifacts."""
+        return LightSource.from_camera(
+            camera, strength=torch.tensor(1.5, device=self.device)
+        )
+
+    _snapshot_cameras: ClassVar[dict[str, float]] = {
+        # Camera azimuths about CameraCoordinates._up applied to the
+        # default camera (sits at -Z): empirically +pi/2 puts the camera
+        # at -X and -pi/2 at +X. Named after the canonical view each
+        # camera corresponds to (the full 8-view orbit ring).
+        "front": 0.0,
+        "frontDiag": -torch.pi / 4,
+        "side": -torch.pi / 2,
+        "backDiag": 5 * torch.pi / 4,
+        "back": torch.pi,
+        "backDiagL": 3 * torch.pi / 4,
+        "sideL": torch.pi / 2,
+        "frontDiagL": torch.pi / 4,
+    }
+
+    def _render_hook(self, epoch: int) -> None:
+        """Renders fixed snapshot cameras every post.render_every epochs.
+
+        One image per camera into the run dir's renders/ subfolder, so
+        long runs can be judged (and stopped) mid-training instead of
+        reading the diffusion loss as a proxy. The deformation is
+        evaluated per camera, so the snapshots show the per-view geometry
+        directly; with two concepts on opposite flank anchors, the
+        side/sideL pair is the differentiation signal.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.render_every
+        if not every or every <= 0 or epoch % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        out_dir = Path(run_dir) / "renders"
+        out_dir.mkdir(exist_ok=True, parents=True)
+        renderer = self._snapshot_renderer()
+        with torch.no_grad():
+            for name, angle in self._snapshot_cameras.items():
+                cam = self._snapshot_camera(angle)
+                light = self._snapshot_light(cam)
+                rgb = renderer.render(self.model.deformed(cam), cam, light)[
+                    "render"
+                ][:, :3]
+                Splimage(rgb).save(out_dir / f"e{epoch:04d}_{name}.png")
+
+    def _checkpoint(self, epoch: int) -> None:
+        """Periodically saves the deformation checkpoint mid-run.
+
+        Every 'post.checkpoint_every' epochs the deformation (and logs,
+        when 'log.save') is written atomically into the run dir, so an
+        interrupted run keeps its progress. The final checkpoint written
+        by :meth:`finish` supersedes this one.
+
+        Args:
+            epoch: Index of the epoch that just completed.
+        """
+        every = self.config.post.checkpoint_every
+        if not every or every <= 0 or (epoch + 1) % every != 0:
+            return
+        run_dir = self.config.path.run_dir
+        if run_dir is None:
+            return
+        run_dir = Path(run_dir)
+        run_dir.mkdir(exist_ok=True, parents=True)
+        file = run_dir / "deformation.vd3d"
+        tmp = file.with_suffix(".vd3d.tmp")
+        self.model.save(tmp)
+        tmp.replace(file)
+        if self.config.log.save and hasattr(self, "_logs"):
+            Config(self._logs).save(run_dir / "logs.yaml")
+        logger.info(f"Checkpointed deformation at epoch {epoch} -> {file}")
 
     def _build_schedule(self) -> list[tuple[int, dict[str, any] | None]]:
         """Resolves the phase schedule into (epochs, overrides) pairs.
@@ -288,11 +530,17 @@ class TrainModelSDS(ViewableScript):
         rebuilt so the shader chain picks up the new shading mode.
         """
         profile = phase.pop("profile", None)
-        if profile is not None and profile != "none":
-            if profile not in self._shading_profiles:
-                raise ValueError(f"Shading profile '{profile}' is invalid.")
-            for section, values in self._shading_profiles[profile].items():
-                self.config[section].update(values)
+        if profile is not None and profile != getattr(self, "_current_profile", None):
+            if profile != "none":
+                if profile not in self._shading_profiles:
+                    raise ValueError(f"Shading profile '{profile}' is invalid.")
+                for section, values in self._shading_profiles[profile].items():
+                    self.config[section].update(values)
+                # Rebuild only on an actual profile change: frequent phase
+                # alternation would otherwise recreate the nvdiffrast
+                # context hundreds of times.
+                self.renderer = self.get_renderer()
+            self._current_profile = profile
         self.config.update(phase)
         # LR may arrive nested (Dict wrapping splits dotted keys) or dotted.
         lr = phase.get("optim.lr")
@@ -481,10 +729,20 @@ class TrainModelSDS(ViewableScript):
                 cfg.loss.view_dependence * accum_steps,
             )
         if cfg.loss.laplacian != 0.0:
-            regs["laplacian"] = (
-                self.laplacian_loss(),
-                cfg.loss.laplacian * accum_steps,
-            )
+            if cfg.loss.laplacian_mode == "deformed":
+                regs["laplacian"] = (
+                    self.deformed_laplacian_loss(),
+                    cfg.loss.laplacian * accum_steps,
+                )
+            elif cfg.loss.laplacian_mode == "functions":
+                regs["laplacian"] = (
+                    self.laplacian_loss(),
+                    cfg.loss.laplacian * accum_steps,
+                )
+            else:
+                raise ValueError(
+                    f"Laplacian mode '{cfg.loss.laplacian_mode}' is invalid."
+                )
         if cfg.loss.volume != 0.0:
             regs["volume"] = (
                 self.volume_loss(),
@@ -509,59 +767,75 @@ class TrainModelSDS(ViewableScript):
             weighted.backward()
             loss_dict[f"{name}_loss"] = weighted.item()
 
+    def _extra_suffix(self) -> str:
+        """Renders prompt.extra into the suffix appended to every prompt."""
+        extra = self.config.prompt.extra
+        if isinstance(extra, str):
+            # CLI overrides arrive as strings; lists survive the JSON
+            # parse path.
+            extra = [extra.strip()] if extra.strip() else []
+        return ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
+
+    def _prompt_basis(self, num_text: int) -> SphericalGaussianBasis:
+        """BSD concept basis: one spherical Gaussian per concept prompt.
+
+        Centers each Gaussian on its prompt anchor (prompt.anchors) and
+        normalizes to a partition of unity.
+
+        Args:
+            num_text: Number of concept prompts to cover.
+
+        Returns:
+            out: Basis with one function per concept prompt.
+
+        Raises:
+            ValueError: Anchor count does not match the prompt count.
+        """
+        cfg = self.config.prompt
+        centroids = torch.tensor(cfg.anchors, dtype=torch.float32)
+        # A single anchor direction is commonly written flat ([x, y, z]);
+        # normalize to the (N, 3) convention.
+        if centroids.ndim == 1:
+            centroids = centroids[None]
+        if centroids.shape[0] != num_text:
+            raise ValueError(
+                f"prompt.anchors holds {centroids.shape[0]} anchor(s) "
+                f"but the prompt text encodes {num_text} concept "
+                "prompt(s); provide one (x, y, z) anchor per prompt, "
+                "e.g. [[0.0, 1.0, 0.0]] for a single prompt."
+            )
+        return SphericalGaussianBasis(
+            num_funcs=num_text,
+            num_dims=1,
+            batch_size=1,
+            sigma_overlap=cfg.overlap,
+            centroids=centroids,
+            normalize=True,
+        ).to(self.device)
+
     def get_text_embeds(
         self, df: DeepFloydGuidance
-    ) -> tuple[list[str], Float[Tensor, "..."], SphericalGaussianBasis | None]:
+    ) -> tuple[list[str], Float[Tensor, "..."] | ViewPromptSet, SphericalGaussianBasis | None]:
         cfg = self.config
         txt = cfg.prompt.text
+        # Strings count as a single prompt (len() would count characters).
+        concepts = list(txt) if isinstance(txt, list) else [txt]
+        if cfg.prompt.view_dependent:
+            return self.get_view_text_embeds(df, concepts)
         views = cfg.camera.views
         aug_views = cfg.camera.aug_views
         batch_size = views * (1 + aug_views)
-        # prompt.extra qualifiers are appended verbatim to every prompt.
-        # Accept a single string as one qualifier (CLI overrides arrive as
-        # strings; lists survive the JSON parse path).
-        extra = cfg.prompt.extra
-        if isinstance(extra, str):
-            extra = [extra.strip()] if extra.strip() else []
-        extra_suffix = (
-            ", " + ", ".join(str(e) for e in extra) if len(extra) > 0 else ""
-        )
-        if isinstance(txt, list):
-            # MeshUp convention: the last prompt is kept raw (no rendering
-            # suffix); extras still apply to every prompt.
-            prompts = [
-                p + ", a 3d rendering" + extra_suffix
-                if i != len(txt) - 1
-                else p + extra_suffix
-                for i, p in enumerate(txt)
-            ]
-        else:
-            prompts = [txt + ", a 3d rendering" + extra_suffix]
+        extra_suffix = self._extra_suffix()
+        # MeshUp convention: the last prompt is kept raw (no rendering
+        # suffix); extras still apply to every prompt.
+        prompts = [
+            p + ", a 3d rendering" + extra_suffix
+            if i != len(concepts) - 1
+            else p + extra_suffix
+            for i, p in enumerate(concepts)
+        ]
         if cfg.diffusion.loss == "bsd":
-            # bsd blends one basis function per concept prompt; strings count
-            # as a single prompt (len() would count characters).
-            num_text = len(txt) if isinstance(txt, list) else 1
-            centroids = torch.tensor(cfg.prompt.anchors, dtype=torch.float32)
-            # A single anchor direction is commonly written flat ([x, y, z]);
-            # normalize to the (N, 3) convention, then validate against the
-            # function count with a useful message.
-            if centroids.ndim == 1:
-                centroids = centroids[None]
-            if centroids.shape[0] != num_text:
-                raise ValueError(
-                    f"prompt.anchors holds {centroids.shape[0]} anchor(s) "
-                    f"but the prompt text encodes {num_text} concept "
-                    "prompt(s); provide one (x, y, z) anchor per prompt, "
-                    "e.g. [[0.0, 1.0, 0.0]] for a single prompt."
-                )
-            basis = SphericalGaussianBasis(
-                num_funcs=num_text,
-                num_dims=1,
-                batch_size=1,
-                sigma_overlap=cfg.prompt.overlap,
-                centroids=centroids,
-                normalize=True,
-            ).to(self.device)
+            basis = self._prompt_basis(len(concepts))
             # Base prompt branch sits after the concept prompts and before
             # the empty uncond branch, so branch order matches the basis
             # columns plus the appended base weight.
@@ -586,6 +860,127 @@ class TrainModelSDS(ViewableScript):
             batch_size=batch_size,
         )
         return prompts, text_embeds, basis
+
+    def get_view_text_embeds(
+        self, df: DeepFloydGuidance, concepts: list[str]
+    ) -> tuple[list[str], ViewPromptSet, SphericalGaussianBasis | None]:
+        """Encodes the canonical-view prompt variants once at startup.
+
+        Every concept prompt is expanded into one variant per configured
+        canonical view ("{prompt}, {view} view"), plus the static branches
+        (optional base prompt, BSD blank branch) that do not vary with the
+        view. Static branches keep their fixed embeddings; each concept
+        branch's embedding is later composited per render from its view
+        sub-prompts weighted by (anchor alpha x view weight).
+
+        Args:
+            df: Diffusion guidance (used only for encoding here).
+            concepts: Undecorated concept prompt texts.
+
+        Returns:
+            out: (prompts, viewset, basis); prompts mirrors the flat path
+            (decorated concepts, then the static branch texts) so
+            num_prompts bookkeeping stays identical.
+        """
+        cfg = self.config
+        prompt_cfg = cfg.prompt
+        views = list(prompt_cfg.views)
+        extra_suffix = self._extra_suffix()
+        variant_texts = []
+        for i, p in enumerate(concepts):
+            # MeshUp's last-prompt-raw rule only makes sense when the last
+            # concept is a distinct prompt; for duplicated-identical
+            # prompts it would give the two object halves different render
+            # suffixes, so all variants get the suffix there.
+            distinct = len(set(concepts)) > 1
+            render_suffix = (
+                ", a 3d rendering"
+                if (distinct or i != len(concepts) - 1)
+                else ""
+            )
+            variant_texts += [
+                f"{p}, {view_qualifier(v)}" + render_suffix + extra_suffix
+                for v in views
+            ]
+        static_texts = []
+        if cfg.diffusion.loss == "bsd":
+            # Static branches only exist in the BSD branch layout (same
+            # guard as the flat path: SDS ignores base/blank branches).
+            if prompt_cfg.base is not None:
+                static_texts.append(
+                    prompt_cfg.base + ", a 3d rendering" + extra_suffix
+                )
+            static_texts.append("")
+        basis = (
+            self._prompt_basis(len(concepts)) if cfg.diffusion.loss == "bsd" else None
+        )
+        negative_prompt = (
+            # One negative entry per encoded text (batch_size=1 below).
+            [prompt_cfg.negative] * (len(variant_texts) + len(static_texts))
+            if prompt_cfg.negative is not None
+            else None
+        )
+        overlap = (
+            prompt_cfg.view_overlap
+            if prompt_cfg.view_overlap is not None
+            else prompt_cfg.overlap
+        )
+        viewset = ViewPromptSet.build(
+            df,
+            variant_texts,
+            static_texts,
+            views,
+            negative_prompt=negative_prompt,
+            mode=prompt_cfg.view_mode,
+            sigma_overlap=overlap,
+        )
+        logger.info(
+            "Encoded view-dependent prompt cache: "
+            f"{len(concepts)} concept(s) x {len(views)} view(s) "
+            f"({viewset.embeds.shape[2]}x{viewset.embeds.shape[3]} each), "
+            f"mode '{viewset.mode}'."
+        )
+        prompts = concepts + static_texts
+        return prompts, viewset, basis
+
+    def _viewer_overlay(self) -> Callable[[Camera], str | None] | None:
+        """Live canonical-view weights for the viewer's current camera.
+
+        Draws the view-prompt weights ("view prompts (mix): front 0.79
+        side 0.11 ...") onto the viewer frame while view-dependent
+        prompts are active; None before the cache is built or when
+        disabled, which draws nothing.
+        """
+        def overlay(camera: Camera) -> str | None:
+            viewset = getattr(self, "viewset", None)
+            if viewset is None:
+                return None
+            with torch.no_grad():
+                center = self.model.model.centroid
+                dirs = camera.location - center
+                weights = viewset.view_weights(dirs)[0]
+            return format_view_weights(weights, viewset.views, viewset.mode)
+
+        return overlay
+
+    def view_directions(
+        self, cameras: list[tuple[Camera, Camera]]
+    ) -> Float[Tensor, "B 3"]:
+        """Unit camera-position directions from the mesh centroid.
+
+        One direction per render camera, pointing from the object center
+        toward the camera — the same frame as CANONICAL_VIEWS (validated
+        on the cow model: face-on view is -Z, dorsal/top view -Y).
+
+        Args:
+            cameras: Camera pairs (render, deformation) of this epoch.
+
+        Returns:
+            out: Unit directions for the render cameras.
+        """
+        center = self.model.model.centroid
+        dirs = torch.stack([rc.location for rc, _ in cameras], dim=0) - center
+        return dirs / dirs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
     def get_prompt_basis(
         self, basis_func: SphericalGaussianBasis, deltas: Float[Tensor, "N 3"]
@@ -664,14 +1059,83 @@ class TrainModelSDS(ViewableScript):
             out: Diffusion loss ('loss_sds').
         """
         cfg = self.config.diffusion
+        prompt_cfg = self.config.prompt
         if cfg.loss == "sds":
-            rt = df.SDS(renders, text_embeds, controller=None)
+            if isinstance(text_embeds, ViewPromptSet):
+                dirs = self.view_directions(cameras)
+                with torch.no_grad():
+                    if prompt_cfg.perpneg:
+                        pos, neg = text_embeds.perpneg_plan(
+                            dirs,
+                            prompt_cfg.perpneg_weighting,
+                            prompt_cfg.perpneg_scale,
+                        )
+                if prompt_cfg.perpneg:
+                    if prompt_cfg.perpneg_mode == "score":
+                        # Branch embeddings are constants; compute them
+                        # outside no_grad so the UNet loss call below sees
+                        # the differentiable renders (the combination math
+                        # itself runs under no_grad inside).
+                        branches = text_embeds.branch_embeds(dirs)
+                        rt = df.PerpNegSDS(
+                            renders,
+                            branches,
+                            text_embeds.uncond,
+                            pos,
+                            neg,
+                        )
+                    else:
+                        with torch.no_grad():
+                            composite = text_embeds.perpneg_embeds(
+                                dirs,
+                                weighting=prompt_cfg.perpneg_weighting,
+                                scale=prompt_cfg.perpneg_scale,
+                            )
+                            uncond = text_embeds.uncond[None].expand(
+                                composite.shape[0], -1, -1
+                            )
+                            embeds = torch.cat([composite, uncond], dim=0)
+                        rt = df.SDS(renders, embeds, controller=None)
+                else:
+                    with torch.no_grad():
+                        text_embeds = text_embeds.sds_embeds(dirs)
+                    rt = df.SDS(renders, text_embeds, controller=None)
+            else:
+                if prompt_cfg.perpneg:
+                    raise ValueError(
+                        "prompt.perpneg requires view-dependent prompts "
+                        "(prompt.view_dependent: true)."
+                    )
+                rt = df.SDS(renders, text_embeds, controller=None)
         else:
             with torch.no_grad():
                 deltas = self.model.model.centroid - torch.stack(
                     [dc.location for rc, dc in cameras], dim=0
                 )
                 attn_alphas = self.get_prompt_basis(alpha_basis, deltas)
+                if isinstance(text_embeds, ViewPromptSet):
+                    # Concept branches get per-view composite embeddings;
+                    # static branches (base, blank) keep fixed embeddings.
+                    if prompt_cfg.perpneg:
+                        if prompt_cfg.perpneg_mode != "embed":
+                            raise ValueError(
+                                "Perp-Neg 'score' mode requires the 'sds' "
+                                "diffusion loss; use perpneg_mode 'embed' "
+                                "with 'bsd'."
+                            )
+                        branches = text_embeds.bsd_perpneg_branches(
+                            self.view_directions(cameras),
+                            weighting=prompt_cfg.perpneg_weighting,
+                            scale=prompt_cfg.perpneg_scale,
+                        )
+                    else:
+                        branches = None
+                    text_embeds = text_embeds.bsd_embeds(
+                        self.view_directions(cameras),
+                        attn_alphas,
+                        alpha_basis.num_funcs,
+                        branches=branches,
+                    )
             assert renders.shape[0] * (num_prompts + 1) == text_embeds.shape[0], (
                 f"render batch {renders.shape[0]} x {num_prompts + 1} branches "
                 f"!= embed rows {text_embeds.shape[0]}"
@@ -715,8 +1179,33 @@ class TrainModelSDS(ViewableScript):
                 radius=radius,
                 point_upwards=cfg.point_upwards,
             ).to(self.device)
+        if cfg.view_source == "random":
+            return Camera.random_rot(
+                H=cfg.H,
+                W=cfg.W,
+                F=F,
+                Zn=cfg.Zn,
+                Zf=cfg.Zf,
+                radius=radius,
+                point_upwards=cfg.point_upwards,
+            ).to(self.device)
         elif cfg.view_source == "orbit":
-            angle = torch.rand((), device=self.device) * 2 * torch.pi
+            # With a deform_range, sample only inside the gate so the SDS
+            # gradients act where the deformation is allowed; the orbit
+            # angle is the negated camera-position azimuth (empirical
+            # mapping: orbit angle +pi/2 puts the camera at -X).
+            dr = getattr(self.model, "deform_range", None)
+            if dr is None:
+                angle = torch.rand((), device=self.device) * 2 * torch.pi
+            elif torch.is_tensor(dr) or isinstance(dr, (list, tuple)):
+                a, b = float(dr[0]), float(dr[1])
+                theta = torch.rand((), device=self.device) * (b - a) + a
+                angle = -theta
+            else:
+                theta = (torch.rand((), device=self.device) * 2 - 1) * (
+                    self.model.deform_range_sigma
+                ) + float(dr)
+                angle = -theta
             Q_orbit = Quaternion.from_axis_angle(
                 CameraCoordinates._up.to(self.device), angle
             ).to(self.device)
@@ -727,6 +1216,8 @@ class TrainModelSDS(ViewableScript):
                 Zn=cfg.Zn,
                 Zf=cfg.Zf,
                 co=CameraCoordinates(radius=radius, Q=Q_orbit),
+                orthographic=cfg.orthographic,
+                ortho_scale=cfg.ortho_scale or 1.5,
             ).to(self.device)
             e_angle = (
                 torch.rand((), device=self.device)
@@ -808,6 +1299,10 @@ class TrainModelSDS(ViewableScript):
         if cfg.post.orbit:
             orbit_cfg = {
                 "model": cfg.model,
+                "camera": {
+                    "orthographic": cfg.camera.orthographic,
+                    "ortho_scale": cfg.camera.ortho_scale,
+                },
                 "path": {
                     "model": deformation_file,
                     "out_dir": run_dir,
@@ -894,6 +1389,46 @@ class TrainModelSDS(ViewableScript):
             .permute(1, 0, 2)
         )
         return (Y**2).mean()
+
+    def deformed_laplacian_loss(self) -> Float[Tensor, ""]:
+        """Region-level Laplacian difference against the base mesh.
+
+        For each camera direction sampled around the sphere, the
+        displacement field (deformed minus source vertices) is first
+        smoothed over the mesh with `loss.laplacian_smooth`
+        neighbor-averaging steps, then the source mesh's cotan-Laplacian
+        is applied and penalized. Smoothing first means the penalty
+        targets region-level deviation of the surface quality from the
+        base mesh ("maintain similarish Laplacian values in general
+        regions") while local detail ridges pass through.
+
+        Uses the 'deformed' Laplacian mode: the composed deformation is
+        measured directly. The 'functions' mode (:meth:`laplacian_loss`)
+        penalizes each basis function's Poisson-solved field instead, but
+        those fields start affine and its magnitude stays negligible.
+
+        Returns:
+            out: Scalar loss, mean over the sampled directions.
+        """
+        n = self.config.loss.laplacian_eval_points
+        steps = int(self.config.loss.laplacian_smooth)
+        V_src = self.model.model.V
+        L = self.model.model.L_cotan_csr  # (V, V), fetched once per call
+        dinv = _cotan_degree_inv(self.model.model)[:, None]
+        loss = torch.zeros((), device=V_src.device)
+        for _ in range(n):
+            cam = Camera.random_rot().to(self.device)
+            D = self.model.deformed(cam).V - V_src  # (N, 3) displacement
+            # Smooth the displacement field over the mesh FIRST, then take
+            # its Laplacian: a localized spike spreads into a low bump
+            # whose Laplacian is small, so the penalty sees only
+            # region-level deviation. (Smoothing the Laplacian residual
+            # itself does not damp its peaks.)
+            for _ in range(steps):
+                D = D + dinv * torch.sparse.mm(L, D)
+            Y = torch.sparse.mm(L, D)  # (N, 3)
+            loss = loss + (Y**2).mean()
+        return loss / n
 
     def _adapt_dist(self, epoch: int):
         """Rescales the camera radius range to the current mesh bounding box.

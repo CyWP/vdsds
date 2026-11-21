@@ -1,5 +1,6 @@
 import threading
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -8,6 +9,7 @@ from PySide6.QtCore import QTimer
 
 from ..deformations import get_deformation, load_deformation
 from ..deformations.base import Deformation
+from ..rendering.camera import Camera
 from ..representations import get_model
 from ..representations.base import Model
 from ..utils.config import Config
@@ -101,9 +103,23 @@ class ViewableScript(Script):
         self.model = self.load_model().to(device)
         self._closed = threading.Event()
         if cfg.window.view:
-            self.view = View(self.model, fps=cfg.window.fps, on_close=self._on_close)
+            self.view = View(
+                self.model,
+                fps=cfg.window.fps,
+                on_close=self._on_close,
+                overlay=self._viewer_overlay(),
+            )
         else:
             self.view = None
+
+    def _viewer_overlay(self) -> Callable[[Camera], str | None] | None:
+        """Per-frame text hook for the live viewer; None disables overlays.
+
+        Called with the viewer's current camera every frame (from the Qt
+        thread). Subclasses return a closure that formats state for the
+        displayed camera.
+        """
+        return None
 
     @property
     def device(self) -> torch.device:
