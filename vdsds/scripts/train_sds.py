@@ -356,33 +356,18 @@ class TrainModelSDS(ViewableScript):
         out_dir = Path(run_dir) / "orbits"
         out_dir.mkdir(exist_ok=True, parents=True)
         frames = int(self.config.post.orbit_frames)
-        device = self.device
-        up = CameraCoordinates._up.to(device)
+        camera = self._snapshot_camera()
         Q_step = Quaternion.from_axis_angle(
-            up, torch.tensor(2 * torch.pi / frames, device=device)
+            CameraCoordinates._up.to(camera.device),
+            torch.tensor(2 * torch.pi / frames, device=camera.device),
         )
-        camera = Camera(
-            H=384,
-            W=384,
-            F=60,
-            co=CameraCoordinates(radius=self._radius_max),
-            orthographic=self.config.camera.orthographic,
-            ortho_scale=self.config.camera.ortho_scale or 1.5,
-        ).to(device)
-        if not hasattr(self, "_snapshot_renderer"):
-            self._snapshot_renderer = Renderer.basic(
-                bg_color=torch.ones(3, device=device), device=device
-            )
 
         def orbit_frames():
             for _ in range(frames):
-                deformed = self.model.deformed(camera)
-                light = LightSource.from_camera(
-                    camera, strength=torch.tensor(1.5, device=device)
-                )
-                rgb = self._snapshot_renderer.render(deformed, camera, light)[
-                    "render"
-                ][:, :3]
+                light = self._snapshot_light(camera)
+                rgb = self._snapshot_renderer().render(
+                    self.model.deformed(camera), camera, light
+                )["render"][:, :3]
                 yield Splimage(rgb)
                 camera.co.Q *= Q_step
 
@@ -392,6 +377,47 @@ class TrainModelSDS(ViewableScript):
                 out_dir / f"orbit_e{epoch:05d}.mp4",
                 fps=30,
             )
+
+    def _snapshot_renderer(self) -> Renderer:
+        """Lazily created shared renderer for snapshot/orbit artifacts."""
+        if not hasattr(self, "__snapshot_renderer"):
+            self.__snapshot_renderer = Renderer.basic(
+                bg_color=torch.ones(3, device=self.device), device=self.device
+            )
+        return self.__snapshot_renderer
+
+    def _snapshot_camera(self, azimuth: float = 0.0) -> Camera:
+        """Fixed diagnostic camera at an orbit azimuth (0 = front).
+
+        Args:
+            azimuth: Orbit azimuth in radians about the world-up axis
+            (empirically +pi/2 puts the camera at -X).
+
+        Returns:
+            out: 384x384 camera at ``self._radius_max`` with the
+            configured orthographic settings.
+        """
+        co = CameraCoordinates(
+            Q=Quaternion.from_axis_angle(
+                CameraCoordinates._up.to(self.device),
+                torch.tensor(azimuth, device=self.device),
+            ),
+            radius=self._radius_max,
+        )
+        return Camera(
+            H=384,
+            W=384,
+            F=60,
+            co=co,
+            orthographic=self.config.camera.orthographic,
+            ortho_scale=self.config.camera.ortho_scale or 1.5,
+        ).to(self.device)
+
+    def _snapshot_light(self, camera: Camera) -> LightSource:
+        """Camera-aligned diagnostic light for snapshot/orbit artifacts."""
+        return LightSource.from_camera(
+            camera, strength=torch.tensor(1.5, device=self.device)
+        )
 
     _snapshot_cameras: ClassVar[dict[str, float]] = {
         # Camera azimuths about CameraCoordinates._up applied to the
@@ -416,7 +442,7 @@ class TrainModelSDS(ViewableScript):
         reading the diffusion loss as a proxy. The deformation is
         evaluated per camera, so the snapshots show the per-view geometry
         directly; with two concepts on opposite flank anchors, the
-        sideL/sideR pair is the differentiation signal.
+        side/sideL pair is the differentiation signal.
 
         Args:
             epoch: Index of the epoch that just completed.
@@ -427,36 +453,16 @@ class TrainModelSDS(ViewableScript):
         run_dir = self.config.path.run_dir
         if run_dir is None:
             return
-        if not hasattr(self, "_snapshot_renderer"):
-            self._snapshot_renderer = Renderer.basic(
-                bg_color=torch.ones(3, device=self.device), device=self.device
-            )
         out_dir = Path(run_dir) / "renders"
         out_dir.mkdir(exist_ok=True, parents=True)
-        up = CameraCoordinates._up.to(self.device)
-        radius = self._radius_max
+        renderer = self._snapshot_renderer()
         with torch.no_grad():
             for name, angle in self._snapshot_cameras.items():
-                co = CameraCoordinates(
-                    Q=Quaternion.from_axis_angle(
-                        up, torch.tensor(angle, device=self.device)
-                    ),
-                    radius=radius,
-                )
-                cam = Camera(
-                    H=384,
-                    W=384,
-                    F=60,
-                    co=co,
-                    orthographic=self.config.camera.orthographic,
-                    ortho_scale=self.config.camera.ortho_scale or 1.5,
-                ).to(self.device)
-                light = LightSource.from_camera(
-                    cam, strength=torch.tensor(1.5, device=self.device)
-                )
-                rgb = self._snapshot_renderer.render(
-                    self.model.deformed(cam), cam, light
-                )["render"][:, :3]
+                cam = self._snapshot_camera(angle)
+                light = self._snapshot_light(cam)
+                rgb = renderer.render(self.model.deformed(cam), cam, light)[
+                    "render"
+                ][:, :3]
                 Splimage(rgb).save(out_dir / f"e{epoch:04d}_{name}.png")
 
     def _checkpoint(self, epoch: int) -> None:

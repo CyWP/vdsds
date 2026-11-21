@@ -57,6 +57,7 @@ VIEW_QUALIFIERS: dict[str, str] = {
     "backDiag": "rear three-quarter view",
     "frontDiagL": "three-quarter view",
     "backDiagL": "rear three-quarter view",
+    "sideL": "side view",
 }
 
 
@@ -247,9 +248,7 @@ class ViewPromptSet:
             out: Per-render view weights; 'mix' rows sum to 1, 'select'
             rows are one-hot at the nearest canonical view.
         """
-        if dirs.ndim == 1:
-            dirs = dirs[None]
-        dirs = dirs.reshape(-1, 3)  # drop stray leading dims
+        dirs = self._flat_dirs(dirs)
         dirs = dirs / dirs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         raw = self._basis._basis(dirs)  # (B, V)
         if self.mode == "mix":
@@ -281,12 +280,7 @@ class ViewPromptSet:
         """
         dirs = self._flat_dirs(dirs)
         if concept_weights is None:
-            concept_weights = torch.full(
-                (dirs.shape[0], self.num_concepts),
-                1.0 / self.num_concepts,
-                dtype=self.embeds.dtype,
-                device=self.embeds.device,
-            )
+            concept_weights = self._uniform_concept_weights(dirs.shape[0])
         # (B,P) x (P,V,T,D) -> (V,B,T,D)
         return torch.einsum("bp,pvtd->vbtd", concept_weights, self.embeds)
 
@@ -440,6 +434,17 @@ class ViewPromptSet:
             out.append(d0 + (neg[:, :, None, None] * perp).sum(dim=1) + self.uncond)
         return torch.stack(out, dim=0)  # (F, B, T, D)
 
+    def _uniform_concept_weights(
+        self, batch: int
+    ) -> Float[Tensor, "B P"]:
+        """Uniform concept weights (averaging over the concepts)."""
+        return torch.full(
+            (batch, self.num_concepts),
+            1.0 / self.num_concepts,
+            dtype=self.embeds.dtype,
+            device=self.embeds.device,
+        )
+
     def composite(
         self,
         dirs: Float[Tensor, "B 3"],
@@ -464,12 +469,7 @@ class ViewPromptSet:
             # Uniform average over the concepts keeps the composite a
             # convex combination (relevant for multi-prompt SDS; BSD and
             # single-prompt SDS are unaffected).
-            concept_weights = torch.full(
-                (weights.shape[0], self.num_concepts),
-                1.0 / self.num_concepts,
-                dtype=weights.dtype,
-                device=weights.device,
-            )
+            concept_weights = self._uniform_concept_weights(weights.shape[0])
         # (B,P) x (B,V) x (P,V,T,D) -> (B,T,D)
         return torch.einsum(
             "bp,bv,pvtd->btd", concept_weights, weights, self.embeds
