@@ -12,6 +12,54 @@ from .ptp import (
 )
 
 
+def perpneg_combine(
+    eps_branches: torch.Tensor,
+    eps_uncond: torch.Tensor,
+    pos_idx: torch.Tensor,
+    neg_weights: torch.Tensor,
+    guidance_scale: float,
+) -> torch.Tensor:
+    """Perp-Neg score-space combination (Armandpour et al., 2023).
+
+    Combines per-branch noise predictions into one guidance direction per
+    render: the uncond score as base, the positive branch's direction at
+    the guidance scale, and every other branch's direction with its
+    component parallel to the positive direction removed (the part that
+    would damage the shared content), scaled by the negative weights.
+
+    Args:
+        eps_branches: Per-branch, per-render noise predictions, RGB
+            channels only, (V, B, ...).
+        eps_uncond: Uncond noise predictions, (B, ...).
+        pos_idx: Positive branch index per render, (B,).
+        neg_weights: Negative weights per (render, branch), (B, V); the
+            positive branch's weight must be 0.
+        guidance_scale: CFG scale applied to the positive direction.
+
+    Returns:
+        out: Combined noise prediction per render, (B, ...).
+    """
+    d = eps_branches - eps_uncond[None]  # (V, B, ...)
+    rows = torch.arange(eps_branches.shape[1], device=d.device)
+    d0 = d[pos_idx, rows]  # (B, ...)
+    # Orthogonalize every branch direction against the positive direction,
+    # flattened per render (the whole score tensor is the vector space).
+    shape = d.shape
+    x = d.reshape(*shape[:2], -1)  # (V, B, C)
+    y = d0.reshape(shape[1], -1)  # (B, C)
+    y2 = y.pow(2).sum(-1, keepdim=True).clamp_min(1e-8)  # (B, 1)
+    xy = (x * y[None]).sum(-1, keepdim=True)  # (V, B, 1)
+    perp = (x - (xy / y2[None]) * y[None]).reshape(shape)  # (V, B, ...)
+    neg = neg_weights.permute(1, 0)  # (V, B)
+    # Broadcast the per-render weights over the score tensor's trailing dims.
+    neg = neg.reshape(neg.shape + (1,) * (d.dim() - 2))  # (V, B, 1, ..., 1)
+    return (
+        eps_uncond
+        + guidance_scale * d0
+        + (neg * perp).sum(dim=0)
+    )
+
+
 class DeepFloydGuidance(nn.Module):
     def __init__(self, cfg, device="cuda", t_range=[0.02, 0.98]):
         super().__init__()
@@ -162,6 +210,80 @@ class DeepFloydGuidance(nn.Module):
         # otherwise detach so only the latents/rgb receive gradients.
         target = latents - grad if grad_embeds else (latents - grad).detach()
         # d(loss)/d(latents) = latents - target = latents - (latents - grad) = grad
+        loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
+        return {
+            "loss_sds": loss_sds,
+            "grad_norm": grad.norm(),
+            "grad": grad,
+        }
+
+    def PerpNegSDS(
+        self,
+        rgb,
+        branch_embeds,
+        uncond_embeds,
+        pos_idx,
+        neg_weights,
+        rgb_as_latents=False,
+    ):
+        """SDS loss with Perp-Neg view negatives (score-space).
+
+        Runs one UNet pass per view branch (plus uncond) over the render
+        batch, then combines the branches with :func:`perpneg_combine`:
+        the branch selected by `pos_idx` guides at the CFG scale while
+        the other views push orthogonally to it with `neg_weights`.
+
+        Args:
+            rgb: Render batch (B, 3, H, W), kept differentiable.
+            branch_embeds: Conditioning embedding per view branch per
+                render, (V, B, T, D).
+            uncond_embeds: The uncond embedding, (T, D).
+            pos_idx: Positive branch index per render, (B,).
+            neg_weights: Negative weights per (render, branch), (B, V),
+                0 at the positive branch.
+
+        Returns:
+            out: {'loss_sds', 'grad_norm', 'grad'} like :meth:`SDS`.
+        """
+        batch_size = rgb.shape[0]
+        num_views = branch_embeds.shape[0]
+        assert rgb_as_latents is False, f"No latent space in {self.__class__.__name__}"
+        rgb = rgb * 2.0 - 1.0
+        latents = F.interpolate(rgb, (64, 64), mode="bilinear", align_corners=False)
+        t = torch.randint(
+            self.min_step,
+            int(self.max_step + 1),
+            [batch_size],
+            dtype=torch.long,
+            device=self.device,
+        )
+        noise = torch.randn_like(latents)
+        latents_noisy = self.scheduler.add_noise(latents, noise, t)
+        # One latent copy per view branch, then the uncond copy.
+        model_input = torch.cat([latents_noisy] * num_views + [latents_noisy], dim=0)
+        text_embeds = torch.cat(
+            [
+                branch_embeds.reshape(num_views * batch_size, *branch_embeds.shape[2:]),
+                uncond_embeds[None].expand(batch_size, -1, -1),
+            ],
+            dim=0,
+        )
+        with torch.no_grad():
+            eps = self.forward_unet(
+                model_input, torch.cat([t] * (num_views + 1)), text_embeds
+            )
+        # Keep only the RGB channels (IF also predicts a variance head).
+        eps_branches = eps[: num_views * batch_size, :3].reshape(
+            num_views, batch_size, 3, *eps.shape[2:]
+        )
+        eps_uncond = eps[num_views * batch_size :, :3]
+        eps_hat = perpneg_combine(
+            eps_branches, eps_uncond, pos_idx, neg_weights, self.cfg.guidance_scale
+        )
+        w = (1 - self.alphas[t]).view(-1, 1, 1, 1)
+        grad = w * (eps_hat - noise)
+        grad = torch.nan_to_num(grad)
+        target = (latents - grad).detach()
         loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
         return {
             "loss_sds": loss_sds,

@@ -334,7 +334,6 @@ def test_train_script_loads_constraints_from_json_only(tmp_path):
 def test_train_script_without_constraints_is_empty():
     from vdsds.scripts.train_sds import TrainModelSDS
     from vdsds.utils.config import Config
-
     script = TrainModelSDS.__new__(TrainModelSDS)
     script.config = Config({})
     assert script.get_constraints() == {}
@@ -345,7 +344,8 @@ def test_train_script_without_constraints_is_empty():
 
 class _FakeDF:
     def encode_text_2(self, prompts, negative_prompt=None, batch_size=1):
-        return torch.zeros(len(prompts) * batch_size, 1)
+        # (rows, T, D) like the real encoder output.
+        return torch.zeros(len(prompts) * batch_size, 1, 1)
 
 
 def _train_script(constraints, centroid=None, device="cuda:0"):
@@ -448,21 +448,26 @@ def test_constraint_prompts_and_anchor_directions():
 
 
 def test_get_text_embeds_uses_constraint_prompts():
+    from vdsds.scripts.train_sds import TrainModelSDS
+
     offsets = [torch.tensor([0.0, 0.0, 0.0]), torch.tensor([0.0, 0.0, 0.0])]
     constraints = _build_constraints([("a moose", offsets[0]), ("cow", offsets[1])])
     script = _train_script(constraints, device="cpu")
-    script.config = Config(
+    # Full script config: class defaults (prompt.view_dependent etc.) plus
+    # the test overrides, mirroring how a real run's config is assembled.
+    config = Config()
+    config.update(TrainModelSDS._default_config_overrides)
+    config.update(
         {
             "prompt": {
                 "text": ["config prompt"],
                 "anchors": [[1.0, 0.0, 0.0]],
-                "extra": [],
-                "negative": None,
             },
             "camera": {"views": 1, "aug_views": 0},
             "diffusion": {"loss": "sds"},
         }
     )
+    script.config = config
     prompts, embeds, basis = script.get_text_embeds(_FakeDF())
     assert basis is None  # 'sds' loss: no BSD basis
     assert prompts[0].startswith("a moose")
@@ -472,22 +477,25 @@ def test_get_text_embeds_uses_constraint_prompts():
 
 
 def test_get_text_embeds_bsd_pairs_prompts_with_anchors():
+    from vdsds.scripts.train_sds import TrainModelSDS
+
     constraints = _build_constraints([("a moose", torch.zeros(3))])
     script = _train_script(constraints, device="cpu")
-    script.config = Config(
+    # Full script config: class defaults (prompt.view_dependent etc.) plus
+    # the test overrides, mirroring how a real run's config is assembled.
+    config = Config()
+    config.update(TrainModelSDS._default_config_overrides)
+    config.update(
         {
             "prompt": {
                 "text": ["config prompt"],
                 "anchors": [[1.0, 0.0, 0.0]],
-                "extra": [],
-                "negative": None,
-                "overlap": 0.75,
-                "base": None,
             },
             "camera": {"views": 1, "aug_views": 0},
             "diffusion": {"loss": "bsd"},
         }
     )
+    script.config = config
     prompts, embeds, basis = script.get_text_embeds(_FakeDF())
     # BSD concept prompt from the constraint (prompt+view are aligned);
     # the trailing "" branch is appended as in the config path.
@@ -499,6 +507,44 @@ def test_get_text_embeds_bsd_pairs_prompts_with_anchors():
         basis.centroids.flatten(), torch.tensor([0.0, 0.0, 1.0]), atol=1e-6
     )
     assert embeds.shape[0] == len(prompts)
+
+
+def test_get_text_embeds_constraint_prompts_view_dependent():
+    """Constraint prompts feed the view-dependent path (prompts, anchors)."""
+    from vdsds.scripts.train_sds import TrainModelSDS
+    from vdsds.utils.view_prompts import ViewPromptSet
+
+    constraints = _build_constraints([("a moose", torch.zeros(3))])
+    script = _train_script(constraints, device="cpu")
+    config = Config()
+    config.update(TrainModelSDS._default_config_overrides)
+    config.update(
+        {
+            "prompt": {
+                "text": ["config prompt"],
+                "anchors": [[1.0, 0.0, 0.0]],
+                "view_dependent": True,
+                "views": ["front", "side"],
+            },
+            "camera": {"views": 1, "aug_views": 0},
+            "diffusion": {"loss": "bsd"},
+        }
+    )
+    script.config = config
+    prompts, viewset, basis = script.get_text_embeds(_FakeDF())
+    assert isinstance(viewset, ViewPromptSet)
+    # Concept text comes from the constraint; the config prompt is unused.
+    assert "config prompt" not in " ".join(viewset.texts)
+    assert all(t.startswith("a moose") for t in viewset.texts)
+    assert viewset.embeds.shape[0] == 1 and viewset.embeds.shape[1] == 2
+    # The concept basis anchors on the constraint's view direction, so the
+    # per-view composite weights match the actual capture geometry.
+    camera = constraints["cid_0"].view.camera.copy().to(script.device)
+    expected = script.model.model.centroid - camera.location
+    expected = expected / expected.norm()
+    assert torch.allclose(
+        basis.centroids.flatten(), expected.to(torch.float32), atol=1e-6
+    )
 
 
 def test_regularizer_losses_wire_constraint_steps():

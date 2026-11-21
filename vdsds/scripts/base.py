@@ -1,5 +1,6 @@
 import threading
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -8,6 +9,7 @@ from PySide6.QtCore import QTimer
 
 from ..deformations import get_deformation, load_deformation
 from ..deformations.base import Deformation
+from ..rendering.camera import Camera
 from ..rendering.light import LightSource
 from ..representations import get_model
 from ..representations.base import Model
@@ -116,9 +118,19 @@ class ViewableScript(Script):
                 # Viewer windows light up at 1.5; other processes keep the
                 # LightSource class default.
                 light=LightSource(strength=torch.tensor(cfg.window.light.strength)),
+                overlay=self._viewer_overlay(),
             )
         else:
             self.view = None
+
+    def _viewer_overlay(self) -> Callable[[Camera], str | None] | None:
+        """Per-frame text hook for the live viewer; None disables overlays.
+
+        Called with the viewer's current camera every frame (from the Qt
+        thread). Subclasses return a closure that formats state for the
+        displayed camera.
+        """
+        return None
 
     @property
     def device(self) -> torch.device:

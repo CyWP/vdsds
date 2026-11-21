@@ -198,7 +198,14 @@ class OrbitFrames(ViewableScript):
             ),
             radius=cfg.radius,
         )
-        return Camera(H=cfg.H, W=cfg.W, F=cfg.F, co=co)
+        return Camera(
+            H=cfg.H,
+            W=cfg.W,
+            F=cfg.F,
+            co=co,
+            orthographic=bool(cfg.get("orthographic", False)),
+            ortho_scale=cfg.get("ortho_scale", 1.5) or 1.5,
+        )
 
     def get_static_cameras(self, radius: float | None = None) -> list[Camera]:
         """Builds every static second view from the ``static_view`` list.
