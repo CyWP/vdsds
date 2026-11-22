@@ -228,6 +228,18 @@ class TrainModelSDS(ViewableScript):
             # visibility (clamped normal-to-camera dot) instead of a
             # flat penalty over the whole selected region.
             "hold_visible_only": False,
+            # Directional hold weighting over the view-direction sphere
+            # (see TrainModelSDS.hold_direction_weights): 'hold'
+            # constraints are anchors of value 1, every other loaded
+            # constraint an anchor of value 0, and the normalized
+            # spherical-Gaussian field between them multiplies the
+            # per-vertex hold penalty -- geometry stays pinned around
+            # the hold directions and free around the constraints that
+            # drive deformation.
+            "hold_directional": True,
+            # Angular falloff of the hold-direction Gaussians; None
+            # falls back to 'prompt.overlap'.
+            "hold_overlap": None,
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -619,6 +631,61 @@ class TrainModelSDS(ViewableScript):
             losses.append(df.DDS(render[sl], ref_rgb[sl], embed, t_max=t_max)["loss_sds"])
         return torch.stack(losses).mean()
 
+    def hold_direction_weights(
+        self, dirs: Float[Tensor, "N 3"]
+    ) -> Float[Tensor, "N"]:
+        """Hold multiplier over the view-direction sphere.
+
+        A spherical-Gaussian basis is built over the loaded constraints'
+        camera directions: 'hold' constraints are positive anchors
+        (hold value 1) and every other constraint is a zero anchor
+        (hold value 0) -- geometry stays pinned around the hold
+        directions and stays free around the constraints that drive
+        deformation. The per-direction multiplier is the normalized
+        basis row summed over the hold columns ('norm' processing, a
+        partition of unity), so it is ~1 at hold directions, ~0 at the
+        other constraints' directions and smoothly interpolated
+        between. Vertex queries use the direction from the model
+        centroid toward the (source) vertex, the same convention as the
+        anchor directions.
+
+        Args:
+            dirs: Unit query directions from the centroid, (N, 3).
+
+        Returns:
+            out: Hold multiplier per query direction, (N,), in [0, 1].
+        """
+        center = self.model.model.centroid
+        hold_dirs, zero_dirs = [], []
+        for cid, constraint in self.constraints.items():
+            view = constraint.view
+            camera = view.camera if view is not None else None
+            if camera is None:
+                continue
+            d = camera.location.to(center.device) - center
+            d = d / d.norm().clamp_min(1e-8)
+            (hold_dirs if constraint.type == "hold" else zero_dirs).append(d)
+        if not hold_dirs:
+            raise ValueError("Hold weighting requires 'hold'-type constraints.")
+        centroids = torch.stack(hold_dirs + zero_dirs, dim=0)  # (F, 3)
+        n_hold = len(hold_dirs)
+        loss_cfg = self.config.get("loss", None)
+        overlap = loss_cfg.get("hold_overlap", None) if loss_cfg is not None else None
+        if overlap is None:
+            prompt_cfg = self.config.get("prompt", None)
+            overlap = prompt_cfg.get("overlap", 0.75) if prompt_cfg is not None else 0.75
+        basis = SphericalGaussianBasis(
+            num_funcs=len(centroids),
+            num_dims=1,
+            batch_size=1,
+            sigma_overlap=overlap,
+            centroids=centroids,
+            normalize=True,
+        ).to(self.device)
+        raw = basis._basis(dirs.to(basis.centroids.device))  # (N, F)
+        raw = raw / raw.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        return raw[:, :n_hold].sum(dim=-1)
+
     def hold_loss(self) -> Float[Tensor, ""]:
         """Zero-displacement loss over the regions of the 'hold'
         constraints.
@@ -632,7 +699,12 @@ class TrainModelSDS(ViewableScript):
         'loss.hold_visible_only', each vertex's penalty is weighted by
         its front-facing visibility (clamped normal-to-camera dot),
         so occluded/back-facing geometry that happens to project into
-        the region is not held.
+        the region is not held. With 'loss.hold_directional' (default
+        on), the penalty is additionally multiplied by the
+        spherical-Gaussian hold field over the constraint directions
+        (:meth:`hold_direction_weights`): fully pinned around the hold
+        constraints' directions, free around the other constraints'
+        anchors, smooth in between.
 
         Selection uses source-mesh projections (detached); the gradient
         flows through the deformed positions only. The loss is a
@@ -640,9 +712,9 @@ class TrainModelSDS(ViewableScript):
         accumulation-step compensation), wired via ``loss.hold``.
 
         Returns:
-            out: Scalar visibility-weighted mean squared displacement
-                over all held vertices (0 when a hold constraint's
-                region selects no vertices).
+            out: Scalar weighted mean squared displacement over all
+                held vertices (0 when a hold constraint's region
+                selects no vertices).
         """
         holds = select_constraints(self.constraints, HOLD_TYPES)
         if not holds:
@@ -651,6 +723,10 @@ class TrainModelSDS(ViewableScript):
                 "none are loaded."
             )
         visible_only = bool(self.config.loss.hold_visible_only)
+        loss_cfg = self.config.get("loss", None)
+        directional = (
+            loss_cfg.get("hold_directional", True) if loss_cfg is not None else True
+        )
         terms = []
         for cid, constraint in holds.items():
             view = constraint.view
@@ -695,6 +771,13 @@ class TrainModelSDS(ViewableScript):
                 weight = (normals * to_cam).sum(dim=-1).clamp(0.0, 1.0)
             else:
                 weight = torch.ones_like(inside, dtype=V_def.dtype)
+            # Directional hold field over the sphere: pinned around the
+            # hold directions, free around the other constraints' anchor
+            # directions (query directions run centroid -> source vertex).
+            if directional:
+                v_dirs = V_src - self.model.model.centroid
+                v_dirs = v_dirs / v_dirs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                weight = weight * self.hold_direction_weights(v_dirs)
             disp = V_def - V_src  # (N, 3)
             w = weight * inside.to(V_def.dtype)  # (N,)
             terms.append((disp**2).sum(dim=-1).mul(w).sum() / w.sum().clamp_min(1e-8))

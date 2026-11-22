@@ -878,6 +878,94 @@ def test_hold_loss_requires_hold_constraints():
         script.hold_loss()
 
 
+def test_hold_direction_weights_anchor_field():
+    """Hold directions are anchors of 1, other constraints' directions
+    anchors of 0, smoothly interpolated between (partition of unity)."""
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera, CameraCoordinates
+
+    # Default camera: centroid -> camera direction is (0, 0, -1); the
+    # offset (0, 0, 2) flips it to (0, 0, 1).
+    camera_front = _hold_camera()
+    camera_back = _hold_camera()
+    camera_back.translate(torch.tensor([0.0, 0.0, 2.0]))
+    constraints = {
+        "cid_h": Constraint(
+            view=ViewState(camera=camera_front), prompt="", type="hold"
+        ),
+        "cid_img": Constraint(
+            view=ViewState(camera=camera_back), prompt="", type="image"
+        ),
+    }
+    script = _train_script(constraints, device="cpu")
+    script.config = Config({})
+    dirs = torch.tensor(
+        [[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    weights = script.hold_direction_weights(dirs)
+    # At the hold anchor: (near) full hold; at the image anchor
+    # (opposite): (near) full freedom; on the 90-degree ring between
+    # the two: the smooth midpoint.
+    assert weights[0] > 0.9
+    assert weights[1] < 0.1
+    assert 0.3 < weights[2] < 0.7
+    assert 0.3 < weights[3] < 0.7
+
+
+def test_hold_loss_directional_weighting():
+    """The spherical hold field modulates the per-vertex penalty: a
+    vertex at the hold anchor is pinned, one at another constraint's
+    anchor is (nearly) free."""
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera
+
+    camera_front = _hold_camera()  # centroid -> camera: (0, 0, -1)
+    camera_back = _hold_camera()
+    camera_back.translate(torch.tensor([0.0, 0.0, 2.0]))  # (0, 0, 1)
+    # v_front sits at the hold anchor direction, v_back at the image
+    # constraint's direction; both project into the front camera's
+    # frame (no overlay: whole frame). A third vertex sits behind the
+    # camera (never selected) so the triangle mesh is well-formed.
+    V_src = torch.tensor([[0.0, 0.0, -0.5], [0.0, 0.0, 0.5], [0.0, 0.0, 2.0]])
+    delta = torch.tensor([[0.0, 0.0, 0.3], [0.0, 0.0, 0.5], [0.0, 0.0, 0.0]])
+    constraints = {
+        "cid_h": Constraint(
+            view=ViewState(camera=camera_front), prompt="", type="hold"
+        ),
+        "cid_img": Constraint(
+            view=ViewState(camera=camera_back), prompt="", type="image"
+        ),
+    }
+
+    def _script(directional):
+        script = _train_script(constraints, device="cpu")
+        script.config = Config(
+            {"loss": {"hold_directional": directional, "hold_visible_only": False}}
+        )
+        script.model.model.V = V_src
+        mesh = _hold_mesh(V_src, delta)
+        script.model.deformed = lambda cam: mesh
+        return script
+
+    flat = _script(False).hold_loss().detach()
+    # Only the two in-frame vertices are selected; the behind-camera
+    # dummy never contributes.
+    assert torch.allclose(flat, (delta[:2] ** 2).sum(dim=-1).mean(), atol=1e-6)
+    directional = _script(True).hold_loss().detach()
+    # The front vertex keeps its full penalty (~1 weight, disp^2 =
+    # 0.09); the back vertex is nearly free (~0 weight on disp^2 =
+    # 0.25): the weighted mean sits well below the flat 0.17.
+    assert directional.item() < flat.item()
+    assert 0.07 < directional.item() < 0.12
+
+
+def test_hold_direction_weights_requires_hold():
+    script = _train_script({}, device="cpu")
+    script.config = Config({})
+    with pytest.raises(ValueError, match="'hold'-type"):
+        script.hold_direction_weights(torch.rand(4, 3))
+
+
 def test_hold_constraints_excluded_from_prompts():
     from vdsds.representations.constraints import Constraint
     from vdsds.rendering.camera import Camera
