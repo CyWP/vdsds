@@ -241,7 +241,7 @@ class TrainModelSDS(ViewableScript):
             # falls back to 'prompt.overlap'.
             "hold_overlap": None,
         },
-        "model": {"name": "mesh"},
+        "model": {"name": "vertextured_mesh"},
         "deformation": {
             "name": "vd_full",  # Options: 'full', 'vd_full', 'vd_restrained'
             "num_funcs": 12,
