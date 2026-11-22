@@ -3,6 +3,8 @@ import numpy as np
 from PySide6.QtCore import QObject, QPoint, Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDockWidget,
     QHBoxLayout,
     QLabel,
@@ -113,6 +115,12 @@ class MainWindow(QMainWindow):
         overlay_layout.addWidget(self.overlay_load_btn)
         self.overlay_clear_btn = QPushButton("Clear Overlay")
         overlay_layout.addWidget(self.overlay_clear_btn)
+        # Applied on Load Overlay: the image is foreground-matted
+        # (RMBG) and the overlay is re-pointed at the processed PNG, so
+        # the background stays out of the viewport and the constraint
+        # losses. Mostly for 'image' constraints (DDS references).
+        self.overlay_rmbg_check = QCheckBox("Remove BG")
+        overlay_layout.addWidget(self.overlay_rmbg_check)
         layout.addWidget(overlay_row)
 
         # ----- Constraint list -----
@@ -123,6 +131,17 @@ class MainWindow(QMainWindow):
         # ----- Per-constraint action row -----
         action_row = QWidget()
         action_layout = QHBoxLayout(action_row)
+        # Type of the constraint created by 'Add' (and the source for
+        # 'Set Type'): which losses consume the constraint.
+        self.constraint_type_combo = QComboBox()
+        for name, ctype in (
+            ("Depth", "depth"),
+            ("Silhouette", "silhouette"),
+            ("Form (depth+silhouette)", "form"),
+            ("Image (DDS)", "image"),
+        ):
+            self.constraint_type_combo.addItem(name, ctype)
+        action_layout.addWidget(self.constraint_type_combo)
         self.constraint_add_btn = QPushButton("Add")
         action_layout.addWidget(self.constraint_add_btn)
         self.constraint_set_view_btn = QPushButton("Set View")
@@ -134,6 +153,9 @@ class MainWindow(QMainWindow):
         self.constraint_prompt_btn = QPushButton("Set Prompt")
         self.constraint_prompt_btn.setEnabled(False)
         action_layout.addWidget(self.constraint_prompt_btn)
+        self.constraint_type_btn = QPushButton("Set Type")
+        self.constraint_type_btn.setEnabled(False)
+        action_layout.addWidget(self.constraint_type_btn)
         self.constraint_delete_btn = QPushButton("Delete")
         self.constraint_delete_btn.setEnabled(False)
         action_layout.addWidget(self.constraint_delete_btn)

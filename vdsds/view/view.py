@@ -14,7 +14,7 @@ from ..rendering.camera import Camera
 from ..rendering.light import LightSource
 from ..rendering.view_state import Overlay, ViewState
 from ..representations.base import Model
-from ..utils.img import ImgUtils
+from ..utils.img import ImgUtils, Splimage
 from ..utils.timer import TimedJob
 from .keymap import K_ALT, K_CTRL, KeyHandler
 from .obj_view import ObjViewer
@@ -149,8 +149,40 @@ class View(QApplication):
             self.load_overlay(path)
 
     def load_overlay(self, path: str | Path):
-        """Set the current overlay from an image path."""
+        """Set the current overlay from an image path.
+
+        With the 'Remove BG' check active, the image is foreground-
+        matted first (RMBG, see :meth:`_remove_background`) and the
+        overlay points at the processed PNG, keeping the background
+        out of the viewport and the constraint losses.
+        """
+        if self.window.window.overlay_rmbg_check.isChecked():
+            path = self._remove_background(path)
         self.view_state.overlay = Overlay(path)
+
+    def _remove_background(self, path: str | Path) -> Path:
+        """Mats the image's foreground and saves it next to the source.
+
+        The processed PNG (`<stem>.rmbg.png`) keeps the overlay path-
+        backed (constraints serialize paths, not tensors) and the
+        matting stable across reloads. Runs synchronously; the model
+        is loaded and unloaded within the call.
+
+        Args:
+            path: Source image path.
+
+        Returns:
+            out: Path of the processed image.
+        """
+        from ..utils.rmbg import BackgroundRemover
+
+        path = Path(path)
+        out = path.with_name(f"{path.stem}.rmbg.png")
+        spl = Splimage(str(path))
+        removed = BackgroundRemover.remove(spl.image())
+        ImgUtils.tensor2pil(removed).save(out)
+        print(f"Background removed -> {out}")
+        return out
 
     def clear_overlay(self):
         """Remove the current overlay."""
@@ -166,26 +198,34 @@ class View(QApplication):
         w.constraint_set_view_btn.clicked.connect(self._set_constraint_view_selected)
         w.constraint_jump_btn.clicked.connect(self._jump_constraint_selected)
         w.constraint_prompt_btn.clicked.connect(self._set_constraint_prompt_selected)
+        w.constraint_type_btn.clicked.connect(self._set_constraint_type_selected)
         w.constraint_delete_btn.clicked.connect(self._delete_constraint_selected)
         w.constraint_save_btn.clicked.connect(self._save_constraints_dialog)
         w.constraint_list.itemSelectionChanged.connect(self._on_constraint_selection)
         self._refresh_constraint_list()
 
+    def _selected_type(self) -> str | None:
+        """The constraint kind selected in the type combo."""
+        combo = self.window.window.constraint_type_combo
+        return combo.currentData()
+
     def _add_constraint_dialog(self):
         prompt = self._request_prompt("Add Constraint", "Prompt:")
         if prompt is not None:
-            self.add_constraint(prompt)
+            self.add_constraint(prompt, ctype=self._selected_type())
 
-    def add_constraint(self, prompt: str = "") -> str:
+    def add_constraint(self, prompt: str = "", ctype: str | None = None) -> str:
         """Capture the current view state as a new constraint.
 
         Args:
             prompt: Optional text prompt stored with the constraint.
+            ctype: Constraint kind ('depth', 'silhouette', 'form',
+                'image'); None for legacy behavior.
 
         Returns:
             out: The generated unique id of the new constraint.
         """
-        cid = self.constraints.add(self.view_state.copy(), prompt)
+        cid = self.constraints.add(self.view_state.copy(), prompt, type=ctype)
         self._refresh_constraint_list()
         return cid
 
@@ -236,6 +276,17 @@ class View(QApplication):
         self.constraints.set_prompt(cid, prompt)
         self._refresh_constraint_list()
 
+    def _set_constraint_type_selected(self):
+        cid = self._selected_cid()
+        if cid is None:
+            return
+        self.set_constraint_type(cid, self._selected_type())
+
+    def set_constraint_type(self, cid: str, ctype: str | None):
+        """Replace a constraint's kind."""
+        self.constraints.set_type(cid, ctype)
+        self._refresh_constraint_list()
+
     def _delete_constraint_selected(self):
         cid = self._selected_cid()
         if cid is not None:
@@ -270,6 +321,8 @@ class View(QApplication):
         for row, (cid, constraint) in enumerate(self.constraints.items().items()):
             label = constraint.prompt or "<unnamed>"
             entry = f"{label}   {cid[:6]}"
+            if constraint.type is not None:
+                entry = f"[{constraint.type}] {entry}"
             item_overlay = constraint.view.overlay if constraint.view else None
             if item_overlay is not None and item_overlay.path is not None:
                 img = Path(item_overlay.path).name
@@ -296,6 +349,7 @@ class View(QApplication):
             w.constraint_set_view_btn,
             w.constraint_jump_btn,
             w.constraint_prompt_btn,
+            w.constraint_type_btn,
             w.constraint_delete_btn,
         ):
             btn.setEnabled(enabled)

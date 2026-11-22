@@ -547,6 +547,192 @@ def test_get_text_embeds_constraint_prompts_view_dependent():
     )
 
 
+# ---------------------------------------------------- constraint kinds
+
+
+def test_constraint_type_validation():
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera
+
+    view = ViewState(camera=Camera())
+    constraint = Constraint(view=view, prompt="", type="image")
+    assert constraint.type == "image"
+    with pytest.raises(ValueError, match="invalid"):
+        Constraint(view=view, prompt="", type="bogus")
+    constraint.set_type("form")
+    assert constraint.type == "form"
+    constraint.set_type(None)
+    assert constraint.type is None
+    with pytest.raises(ValueError, match="invalid"):
+        constraint.set_type("bogus")
+
+
+def test_constraint_type_roundtrip(tmp_path, camera, overlay):
+    from vdsds.representations.constraints import ConstraintManager
+
+    path = tmp_path / "constraints.json"
+    manager = ConstraintManager(path)
+    cid = manager.add(ViewState(camera=camera), prompt="p", type="image")
+    assert ConstraintManager(path).get(cid).type == "image"
+    manager.set_type(cid, "form")
+    assert ConstraintManager(path).get(cid).type == "form"
+    manager.set_type(cid, None)
+    assert ConstraintManager(path).get(cid).type is None
+
+
+def test_constraint_type_legacy_files_load_as_none(tmp_path):
+    from vdsds.rendering.camera import Camera
+    from vdsds.rendering.view_state import camera_to_dict
+    from vdsds.representations.constraints import ConstraintManager
+
+    # Pre-type-era file: entries carry no 'type' key.
+    path = tmp_path / "legacy.json"
+    import json
+
+    path.write_text(
+        json.dumps(
+            {
+                "cid0": {
+                    "prompt": "x",
+                    "view": {"camera": camera_to_dict(Camera())},
+                }
+            }
+        )
+    )
+    loaded = ConstraintManager(path).items()
+    assert loaded["cid0"].type is None
+    assert loaded["cid0"].prompt == "x"
+
+
+def test_select_constraints_filters_by_type():
+    from vdsds.representations.constraints import (
+        Constraint,
+        select_constraints,
+        CONSTRAINT_TYPES,
+        DEPTH_TYPES,
+        IMAGE_TYPES,
+        SILHOUETTE_TYPES,
+    )
+    from vdsds.rendering.camera import Camera
+
+    def _c(ctype):
+        return Constraint(view=ViewState(camera=Camera()), prompt="", type=ctype)
+
+    constraints = {
+        "legacy": _c(None),
+        "depth": _c("depth"),
+        "silhouette": _c("silhouette"),
+        "form": _c("form"),
+        "image": _c("image"),
+    }
+    assert set(select_constraints(constraints, DEPTH_TYPES)) == {
+        "legacy", "depth", "form"
+    }
+    assert set(select_constraints(constraints, SILHOUETTE_TYPES)) == {
+        "legacy", "silhouette", "form"
+    }
+    assert set(select_constraints(constraints, IMAGE_TYPES)) == {"image"}
+    # All kinds are reachable through the union of the type tuples.
+    covered = set(DEPTH_TYPES) | set(SILHOUETTE_TYPES) | set(IMAGE_TYPES)
+    assert covered == {None, *CONSTRAINT_TYPES}
+
+
+def test_prepare_constraint_depths_filter_by_type(monkeypatch):
+    from vdsds.utils import depth as depth_module
+    from vdsds.rendering.camera import Camera
+    from vdsds.representations.constraints import Constraint
+
+    def _c(ctype):
+        return Constraint(view=ViewState(camera=Camera()), prompt="", type=ctype)
+
+    constraints = {
+        "cid_depth": _c("depth"),
+        "cid_sil": _c("silhouette"),
+        "cid_form": _c("form"),
+        "cid_image": _c("image"),
+        "cid_legacy": _c(None),
+    }
+    script = _train_script(constraints, device="cpu")
+    seen = {}
+
+    def fake_from_constraints(cons, **kw):
+        seen["ids"] = list(cons.keys())
+        return {}
+
+    monkeypatch.setattr(
+        depth_module.DepthAnything,
+        "depth_from_constraints",
+        classmethod(lambda cls, cons, **kw: fake_from_constraints(cons)),
+    )
+    script.prepare_constraint_depths()
+    assert seen["ids"] == ["cid_depth", "cid_form", "cid_legacy"]
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Renderer requires a CUDA device"
+)
+def test_silhouette_loss_filter_by_type(monkeypatch, tmp_path):
+    import numpy as np
+
+    import vdsds.utils.silhouette as silhouette_module
+    from vdsds.rendering.camera import Camera
+    from vdsds.rendering.view_state import Overlay
+    from vdsds.representations.constraints import Constraint
+
+    png = tmp_path / "silhouette.png"
+    arr = np.zeros((32, 32, 4), np.uint8)
+    arr[..., :3] = 255
+    arr[..., 3] = 255
+    Image.fromarray(arr, mode="RGBA").save(png)
+
+    def _c(ctype):
+        return Constraint(
+            view=ViewState(camera=Camera(H=32, W=32), overlay=Overlay(str(png))),
+            prompt="",
+            type=ctype,
+        )
+
+    constraints = {
+        "cid_depth": _c("depth"),      # not silhouette-eligible
+        "cid_sil": _c("silhouette"),
+        "cid_form": _c("form"),
+        "cid_image": _c("image"),      # not silhouette-eligible
+        "cid_legacy": _c(None),
+    }
+    script = _train_script(constraints, device="cuda:0")
+    script.config = Config({})
+    script.model.deformed = lambda cam: Camera.random_rot(radius=1.5)
+
+    seen = {}
+
+    def fake_silhouette(tgt_imgs, meshes, cameras, **kwargs):
+        seen["n"] = len(cameras)
+        return torch.tensor(0.5)
+
+    monkeypatch.setattr(silhouette_module, "silhouette_loss", fake_silhouette)
+    script.silhouette_loss()
+    assert seen["n"] == 3  # silhouette + form + legacy only
+
+
+def test_constraint_sds_requires_df():
+    from vdsds.rendering.camera import Camera
+    from vdsds.representations.constraints import Constraint
+
+    script = _train_script(
+        {"cid_i": Constraint(view=ViewState(camera=Camera()), prompt="", type="image")},
+        device="cpu",
+    )
+    with pytest.raises(ValueError, match="diffusion guidance"):
+        script.constraint_sds_loss()
+
+
+def test_constraint_sds_requires_image_constraints():
+    script = _train_script({}, device="cpu")
+    script._df = object()
+    with pytest.raises(ValueError, match="'image'-type"):
+        script.constraint_sds_loss()
+
+
 def test_regularizer_losses_wire_constraint_steps():
     script = _train_script({}, device="cpu")
     script.config = Config(
@@ -561,6 +747,7 @@ def test_regularizer_losses_wire_constraint_steps():
                 "volume_eval_points": 8,
                 "silhouette": 2.0,
                 "depth": 0.5,
+                "constraint_sds": 0.0,
             }
         }
     )
@@ -587,6 +774,7 @@ def test_regularizer_losses_skip_zero_constraint_steps():
                 "volume_eval_points": 8,
                 "silhouette": 0.0,
                 "depth": 0.0,
+                "constraint_sds": 0.0,
             }
         }
     )

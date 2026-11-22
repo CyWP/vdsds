@@ -23,10 +23,14 @@ from ..rendering.shader import (
     SoftLambertShader,
 )
 from ..representations.constraints import (
+    DEPTH_TYPES,
+    IMAGE_TYPES,
+    SILHOUETTE_TYPES,
     Constraint,
     ConstraintManager,
     anchors_from_constraints,
     prompts_from_constraints,
+    select_constraints,
 )
 from ..utils.config import Config
 from ..utils.deepfloyd import DeepFloydGuidance
@@ -196,6 +200,24 @@ class TrainModelSDS(ViewableScript):
             # Weight of the silhouette under-coverage (inverse) term;
             # 0 keeps the original over-coverage-only behavior.
             "silhouette_inverse": 0.0,
+            # Paired-noise DDS loss over 'image' constraints (see
+            # TrainModelSDS.constraint_sds_loss and DeepFloydGuidance.
+            # DDS): the constraint photo is the diffusion reference at
+            # the constraint camera. Stochastic per (t, noise) draw;
+            # averaged over 'constraint_sds_draws' draws per epoch.
+            "constraint_sds": 0.0,
+            # DDS draws per epoch (averaged); one grad UNet pass each.
+            "constraint_sds_draws": 2,
+            # Upper fraction of the noise schedule DDS samples t from
+            # (the paired difference loses its signal toward pure
+            # noise).
+            "constraint_sds_t_max": 0.5,
+            # Content-border pixels kept around the union of the
+            # render's and the reference's content extents before the
+            # latent encoding (both images are cropped to the same
+            # window, so the comparison is pixel-aligned without dead
+            # background).
+            "constraint_sds_border": 16,
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -324,11 +346,15 @@ class TrainModelSDS(ViewableScript):
     def prepare_constraint_depths(self) -> None:
         """Precompute the constraint mono depths before the run starts.
 
-        DA v3 loads, infers all constraint images and unloads within
-        the single :meth:`DepthAnything.depth_from_constraints` call;
-        nothing of it is needed during training.
+        DA v3 loads, infers all depth-eligible constraint images and
+        unloads within the single :meth:`DepthAnything.depth_from_constraints`
+        call; nothing of it is needed during training. Only constraints
+        whose type participates in the depth loss ('depth', 'form',
+        legacy None) are inferred; 'image'/'silhouette' constraints are
+        skipped.
         """
-        self._mono_depths = DepthAnything.depth_from_constraints(self.constraints)
+        eligible = select_constraints(self.constraints, DEPTH_TYPES)
+        self._mono_depths = DepthAnything.depth_from_constraints(eligible)
 
     def depth_loss(self, mode: str = "affine") -> Float[Tensor, ""]:
         """Rendered-vs-monocular depth distribution loss over the views
@@ -399,7 +425,9 @@ class TrainModelSDS(ViewableScript):
         from ..utils.silhouette import silhouette_loss as silhouette_loss_fn
 
         tgt_imgs, meshes, cameras = [], [], []
-        for cid, constraint in self.constraints.items():
+        for cid, constraint in select_constraints(
+            self.constraints, SILHOUETTE_TYPES
+        ).items():
             view = constraint.view if constraint is not None else None
             overlay = view.overlay if view is not None else None
             camera = view.camera if view is not None else None
@@ -434,6 +462,152 @@ class TrainModelSDS(ViewableScript):
             cameras,
             in_weight=in_weight,
         )
+
+    def constraint_cond_embed(self, cid: str) -> Float[Tensor, "T D"]:
+        """The shared DDS conditioning embedding for one constraint.
+
+        Both DDS branches must see the same embedding so the score
+        difference isolates image content; this returns the
+        per-camera conditioning the training loss itself would use at
+        the constraint's view.
+
+        - View-dependent prompts: the canonical-view composite at the
+          constraint's camera direction, concept-weighted by the
+          anchor basis at that direction; the perp-neg composite when
+          perp-neg conditioning is active.
+        - Flat prompts: the concept embedding selected by the anchor
+          basis at the constraint's view direction (argmax); concept 0
+          without a basis (plain single-prompt SDS).
+
+        Args:
+            cid: The constraint id (must carry a view).
+
+        Returns:
+            out: The (T, D) conditioning embedding.
+        """
+        camera = self.constraints[cid].view.camera.copy().to(self.device)
+        center = self.model.model.centroid
+        dirs = (camera.location - center)[None]  # centroid -> camera
+        dirs = dirs / dirs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        viewset = getattr(self, "viewset", None)
+        if viewset is not None:
+            weights = None
+            if self.prompt_basis is not None:
+                # Anchor-basis convention: deltas point camera -> centroid.
+                delta = (center - camera.location)[None]
+                alphas = self.get_prompt_basis(self.prompt_basis, delta)
+                weights = alphas[:, : self.prompt_basis.num_funcs]
+            prompt_cfg = self.config.prompt
+            if prompt_cfg.perpneg:
+                composite = viewset.perpneg_embeds(
+                    dirs,
+                    concept_weights=weights,
+                    weighting=prompt_cfg.perpneg_weighting,
+                    scale=prompt_cfg.perpneg_scale,
+                )
+            else:
+                composite = viewset.composite(dirs, concept_weights=weights)
+            return composite[0]
+        text_embeds = getattr(self, "text_embeds", None)
+        if text_embeds is None:
+            raise ValueError(
+                "Constraint DDS needs the encoded prompt embeddings "
+                "(set during run); plain flat-SDS setups without "
+                "view-dependent prompts are not supported."
+            )
+        # Flat path: pick the concept by anchor argmax at the
+        # constraint's view direction.
+        idx = 0
+        if self.prompt_basis is not None:
+            delta = (center - camera.location)[None]
+            alphas = self.get_prompt_basis(self.prompt_basis, delta)
+            idx = int(alphas[:, : self.prompt_basis.num_funcs].argmax(dim=-1)[0])
+        batch = getattr(self, "_embed_batch", 1)
+        return text_embeds[idx * batch]
+
+    def constraint_sds_loss(self, draws: int | None = None) -> Float[Tensor, ""]:
+        """Paired-noise DDS loss over the 'image' constraints.
+
+        For each draw, one 'image'-type constraint is sampled; its
+        placed overlay image is the diffusion reference and the mesh
+        is rendered at the constraint camera. Both are composited over
+        the configured background color, cropped to the shared content
+        window (union of the render's depth-coverage extent and the
+        reference's alpha extent, plus 'loss.constraint_sds_border'
+        pixels of margin), and passed to :meth:`DeepFloydGuidance.DDS`
+        with the shared conditioning embedding
+        (:meth:`constraint_cond_embed`). The loss is a stochastic draw
+        over (t, noise), so it is averaged over
+        'loss.constraint_sds_draws' draws per call — treat it as a
+        per-epoch regularizer with no accumulation-step compensation,
+        like the other constraint-view losses.
+
+        Returns:
+            out: Scalar loss, averaged over the draws.
+
+        Raises:
+            ValueError: No diffusion guidance (before run) or no
+                'image'-type constraints.
+        """
+        df = getattr(self, "_df", None)
+        if df is None:
+            raise ValueError(
+                "Constraint DDS requires the diffusion guidance; it is "
+                "only available during a run."
+            )
+        ids = list(select_constraints(self.constraints, IMAGE_TYPES).keys())
+        if not ids:
+            raise ValueError(
+                "Constraint DDS requires 'image'-type constraints with "
+                "images and views; none are loaded."
+            )
+        if draws is None:
+            draws = int(self.config.loss.constraint_sds_draws)
+        border = int(self.config.loss.constraint_sds_border)
+        t_max = float(self.config.loss.constraint_sds_t_max)
+        bg = torch.tensor(
+            self.config.shader.bg_color, device=self.device, dtype=torch.float32
+        )
+        losses = []
+        for _ in range(draws):
+            cid = ids[random.randrange(len(ids))]
+            view = self.constraints[cid].view
+            camera = view.camera.copy().to(self.device)
+            # Reference: the placed overlay composited over the training
+            # background (rmbg'd constraints carry their subject in the
+            # alpha channel, so only the subject remains).
+            placed = view.overlay.image(camera.H, camera.W)  # (1, 4, H, W)
+            alpha = placed[:, 3:4]
+            ref_rgb = alpha * placed[:, :3] + (1 - alpha) * bg[None, :, None, None]
+            # Render at the constraint camera (gradient flows through
+            # this branch only); deterministic camera-aligned light so
+            # the paired difference stays content-driven.
+            data = self.model.deformed(camera)
+            light = LightSource.from_camera(camera)
+            render = self.renderer(data, camera, light)["render"]  # (1, 3, H, W)
+            # Render content mask from the depth renderer (no grad): the
+            # training render already composites its background away.
+            with torch.no_grad():
+                depth = self.get_depth_renderer()(data.detach(), camera, light)["depth"]
+            ren_mask = (depth >= 0.0).float()  # (1, 1, H, W)
+            # Shared content window: union of both extents (+border),
+            # so both crops align in pixel space.
+            union = ((ren_mask[:, 0] + alpha[:, 0]) > 0.0).float()  # (1, H, W)
+            window = torch.zeros_like(placed)
+            window[:, 3] = union
+            top, bottom, left, right = ImgUtils.crop_alpha_bounds(
+                window, border=border
+            )
+            h, w = camera.H, camera.W
+            sl = (
+                slice(None),
+                slice(None),
+                slice(top, h - bottom),
+                slice(left, w - right),
+            )
+            embed = self.constraint_cond_embed(cid)
+            losses.append(df.DDS(render[sl], ref_rgb[sl], embed, t_max=t_max)["loss_sds"])
+        return torch.stack(losses).mean()
 
     def run(self):
         device = self.device
@@ -471,8 +645,14 @@ class TrainModelSDS(ViewableScript):
         accum_steps = config.optim.accum_steps
         prompts, text_embeds, prompt_basis = self.get_text_embeds(df)
         # Kept for the live viewer's view-weights overlay (None without
-        # view-dependent prompts).
+        # view-dependent prompts) and for the constraint-DDS embedding
+        # selection.
         self.viewset = text_embeds if isinstance(text_embeds, ViewPromptSet) else None
+        # Full embeds kept for the flat-path DDS concept selection.
+        self.text_embeds = text_embeds
+        self.prompt_basis = prompt_basis
+        self._df = df
+        self._embed_batch = config.camera.views * (1 + config.camera.aug_views)
         batch_size = config.camera.views * (1 + config.camera.aug_views)
         optimizer = torch.optim.Adam(
             [*self.model.get_parameters()],
@@ -917,6 +1097,11 @@ class TrainModelSDS(ViewableScript):
             regs["silhouette"] = (self.silhouette_loss(), cfg.loss.silhouette)
         if cfg.loss.depth != 0.0:
             regs["depth"] = (self.depth_loss(), cfg.loss.depth)
+        if cfg.loss.constraint_sds != 0.0:
+            regs["constraint_sds"] = (
+                self.constraint_sds_loss(),
+                cfg.loss.constraint_sds,
+            )
         return regs
 
     def _apply_regularizers(

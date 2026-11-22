@@ -10,22 +10,65 @@ from torch import Tensor
 
 from ..rendering.view_state import ViewState
 
+# Constraint kinds. 'image' adds the paired-noise DDS loss (the image is
+# a diffusion reference); 'depth'/'silhouette' select the corresponding
+# regularizer; 'form' enables both. None is the legacy behavior: the
+# constraint participates in depth AND silhouette (and prompts) as
+# before the type field existed.
+CONSTRAINT_TYPES: tuple[str, ...] = ("depth", "silhouette", "form", "image")
+
+# Type participation per regularizer. Legacy (None) constraints keep
+# their old all-of-the-above behavior except for DDS ('image' only).
+DEPTH_TYPES: tuple[str | None, ...] = (None, "depth", "form")
+SILHOUETTE_TYPES: tuple[str | None, ...] = (None, "silhouette", "form")
+IMAGE_TYPES: tuple[str | None, ...] = ("image",)
+
+
+def select_constraints(
+    constraints: dict[str, "Constraint"],
+    types: tuple[str | None, ...],
+) -> dict[str, "Constraint"]:
+    """Filters the constraint dict to the given kinds.
+
+    Args:
+        constraints: The id-keyed constraint dict.
+        types: Constraint kinds to keep (see CONSTRAINT_TYPES; None is
+            the legacy kind).
+
+    Returns:
+        out: The id-keyed sub-dict of constraints whose type is listed.
+    """
+    return {cid: c for cid, c in constraints.items() if c.type in types}
+
 
 class Constraint:
     """Container for constraint data as captured from the view.
 
     Holds a serialized ViewState snapshot plus the text prompt that was
-    provided when the constraint was created or updated.
+    provided when the constraint was created or updated, and the kind
+    of constraint (which losses/training signals consume it).
     """
 
-    def __init__(self, view: ViewState, prompt: str = "") -> None:
+    def __init__(
+        self,
+        view: ViewState,
+        prompt: str = "",
+        type: str | None = None,
+    ) -> None:
         """
         Args:
             view: The captured ViewState (camera plus overlay).
             prompt: The user-provided text prompt for this constraint.
+            type: One of CONSTRAINT_TYPES, or None for legacy behavior.
         """
+        if type is not None and type not in CONSTRAINT_TYPES:
+            raise ValueError(
+                f"Constraint type '{type}' is invalid; choose from "
+                f"{CONSTRAINT_TYPES} or None (legacy)."
+            )
         self.view = view
         self.prompt = prompt
+        self.type = type
 
     # ACCESS / MUTATION
 
@@ -38,22 +81,42 @@ class Constraint:
     def set_prompt(self, prompt: str) -> None:
         self.prompt = prompt
 
+    def set_type(self, type: str | None) -> None:
+        if type is not None and type not in CONSTRAINT_TYPES:
+            raise ValueError(
+                f"Constraint type '{type}' is invalid; choose from "
+                f"{CONSTRAINT_TYPES} or None (legacy)."
+            )
+        self.type = type
+
     # SERIALIZATION
 
     def to_dict(self) -> dict:
         """Serialize to JSON-able types."""
         return {
             "prompt": self.prompt,
+            "type": self.type,
             "view": self.view.to_dict() if self.view is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> Constraint:
-        """Rebuild a Constraint from :meth:`to_dict` output."""
+        """Rebuild a Constraint from :meth:`to_dict` output.
+
+        Legacy files without a 'type' key load as None (the legacy
+        behavior: depth + silhouette + prompt).
+        """
         view = data.get("view", None)
+        type = data.get("type", None)
+        if type not in (None,) + CONSTRAINT_TYPES:
+            raise ValueError(
+                f"Constraint type '{type}' is invalid; choose from "
+                f"{CONSTRAINT_TYPES} or None (legacy)."
+            )
         return cls(
             view=ViewState.from_dict(view) if view is not None else None,
             prompt=data.get("prompt", ""),
+            type=type,
         )
 
 
@@ -96,12 +159,13 @@ class ConstraintManager:
     def __contains__(self, cid: str) -> bool:
         return cid in self._constraints
 
-    def add(self, view: ViewState, prompt: str = "") -> str:
+    def add(self, view: ViewState, prompt: str = "", type: str | None = None) -> str:
         """Register a new constraint from a ViewState snapshot.
 
         Args:
             view: The captured ViewState (camera plus overlay).
             prompt: The user-provided text prompt.
+            type: Constraint kind (CONSTRAINT_TYPES or None/legacy).
 
         Returns:
             out: The generated unique id of the new constraint.
@@ -109,7 +173,7 @@ class ConstraintManager:
         cid = uuid.uuid4().hex
         self._constraints = {
             **self._constraints,
-            cid: Constraint(view=view, prompt=prompt),
+            cid: Constraint(view=view, prompt=prompt, type=type),
         }
         self.save()
         return cid
@@ -135,6 +199,13 @@ class ConstraintManager:
         if cid not in self._constraints:
             raise KeyError(cid)
         self._constraints[cid].set_prompt(prompt)
+        self.save()
+
+    def set_type(self, cid: str, type: str | None) -> None:
+        """Replace a constraint's kind."""
+        if cid not in self._constraints:
+            raise KeyError(cid)
+        self._constraints[cid].set_type(type)
         self.save()
 
     # SERIALIZATION
