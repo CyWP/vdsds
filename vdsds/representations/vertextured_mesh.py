@@ -49,5 +49,11 @@ class VerTexturedMesh(Mesh):
             V_center = (V_max + V_min) / 2
             V = (V - V_center) / V_extent.max()
         V = torch.stack([V[:, 1], V[:, 0], -V[:, 2]], dim=1)
-        texture = Splimage(texture, force_rgba=False).image_sample(uv_co)[0, :, :3]
+        # Mesh uv_co is (u, v) in top-down image space (the loaders'
+        # standard, matching dr.texture); image_sample expects
+        # (row, col) pixel-center coordinates, so the coordinates are
+        # transposed for the bake.
+        texture = Splimage(texture, force_rgba=False).image_sample(
+            uv_co.flip(-1).contiguous()
+        )[0, :, :3]
         return cls(V, F, texture)

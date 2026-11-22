@@ -52,6 +52,10 @@ def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
                 if words and words[0] == "map_Kd":
                     s = words[1]
                     tex_file = PureWindowsPath(s) if s[1] == ":" else Path(s)
+                    if not isinstance(tex_file, PureWindowsPath):
+                        # mtl paths are relative to the obj directory;
+                        # an absolute path is kept as-is by the join.
+                        tex_file = path.parent / tex_file
                     if isinstance(tex_file, PureWindowsPath) or not tex_file.exists():
                         tex_file = path.parent / "textures" / tex_file.name
                         if not tex_file.exists():
@@ -65,6 +69,9 @@ def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         except Exception as e:
             raise e
         uv_co = torch.tensor(uv_co)[:, :2]
+        # OBJ 'vt' v runs bottom-up (v=0 at the image bottom); loaders
+        # standardize uv_co to (u, v), top-down image space (matching
+        # dr.texture and the Splimage samplers), so v is flipped here.
         uv_co[:, 1] = 1 - uv_co[:, 1]
         V[:, 1] = -V[:, 1]
     return {
@@ -101,7 +108,12 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     mtl = None
     if mesh.visual.kind == "texture" and mesh.visual.uv is not None:
         uv_co = torch.tensor(mesh.visual.uv, dtype=torch.float32)
-        uv_co[:, 1] = 1 - uv_co[:, 1]
+        # glTF UVs are (u, v) with v top-down already; they are kept
+        # native. Loaders standardize uv_co to (u, v), top-down image
+        # space: dr.texture samples v top-down (row 0 = image top), and
+        # Splimage.image_sample consumers (e.g. the VerTexturedMesh UV
+        # bake) transpose to their (row, col) convention at the call
+        # site. The v flip here produced vertically mirrored textures.
         # uv_co = torch.stack([1 - uv_co[:, 1], 1 - uv_co[:, 0]], dim=1)
         uv_idx = F.clone()
         mtl = Splimage(mesh.visual.material.baseColorTexture, force_rgba=False)._tensor[
