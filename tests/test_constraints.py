@@ -610,6 +610,7 @@ def test_select_constraints_filters_by_type():
         select_constraints,
         CONSTRAINT_TYPES,
         DEPTH_TYPES,
+        HOLD_TYPES,
         IMAGE_TYPES,
         SILHOUETTE_TYPES,
     )
@@ -624,6 +625,7 @@ def test_select_constraints_filters_by_type():
         "silhouette": _c("silhouette"),
         "form": _c("form"),
         "image": _c("image"),
+        "hold": _c("hold"),
     }
     assert set(select_constraints(constraints, DEPTH_TYPES)) == {
         "legacy", "depth", "form"
@@ -632,8 +634,11 @@ def test_select_constraints_filters_by_type():
         "legacy", "silhouette", "form"
     }
     assert set(select_constraints(constraints, IMAGE_TYPES)) == {"image"}
+    assert set(select_constraints(constraints, HOLD_TYPES)) == {"hold"}
     # All kinds are reachable through the union of the type tuples.
-    covered = set(DEPTH_TYPES) | set(SILHOUETTE_TYPES) | set(IMAGE_TYPES)
+    covered = (
+        set(DEPTH_TYPES) | set(SILHOUETTE_TYPES) | set(IMAGE_TYPES) | set(HOLD_TYPES)
+    )
     assert covered == {None, *CONSTRAINT_TYPES}
 
 
@@ -714,6 +719,207 @@ def test_silhouette_loss_filter_by_type(monkeypatch, tmp_path):
     assert seen["n"] == 3  # silhouette + form + legacy only
 
 
+# ------------------------------------------------------------ hold loss
+
+
+def _hold_mesh(V_src, delta, flip=False):
+    """Mesh-like deformed output: V moved by `delta`, simple triangle."""
+    from vdsds.representations.mesh import Mesh
+
+    F = torch.tensor([[0, 1, 2]], dtype=torch.int32)
+    if flip:
+        F = F[:, [2, 1, 0]].contiguous()
+    V = (V_src + delta).detach().requires_grad_(True)
+    return Mesh(V=V, F=F)
+
+
+def _hold_camera():
+    return Camera(H=64, W=64)
+
+
+def test_hold_loss_pins_in_frame_vertices():
+    """Whole-frame hold: in-bounds front vertices are pinned, the rest
+    are free; gradient lands only on held vertices."""
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera
+
+    camera = _hold_camera()
+    V_src = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [5.0, 5.0, 0.0], [0.0, 0.0, 2.0]]
+    )
+    # Displacements: distinct per vertex; the far vertex projects out of
+    # the frame, the (0, 0, 2) vertex sits behind the camera.
+    delta = torch.tensor(
+        [
+            [0.1, 0.0, 0.0],
+            [0.0, 0.2, 0.0],
+            [0.0, 0.0, 0.3],
+            [0.7, 0.0, 0.0],
+            [0.0, 0.9, 0.0],
+        ]
+    )
+    constraints = {
+        "cid_h": Constraint(
+            view=ViewState(camera=camera), prompt="", type="hold"
+        )
+    }
+    script = _train_script(constraints, device="cpu")
+    script.config = Config({"loss": {"hold_visible_only": False}})
+    script.model.model.V = V_src
+    mesh = _hold_mesh(V_src, delta)
+    script.model.deformed = lambda cam: mesh
+
+    loss = script.hold_loss()
+    # Held = vertices 0, 1, 2 (in frame, in front of the camera).
+    expected = (delta[:3] ** 2).sum(dim=-1).mean()
+    assert torch.allclose(loss.detach(), expected, atol=1e-6)
+    # Gradient lands only on the held vertices.
+    loss.backward()
+    grad = mesh.V.grad
+    assert torch.isfinite(grad).all()
+    assert torch.all(grad[3] == 0) and torch.all(grad[4] == 0)
+    assert (grad[:3].norm(dim=-1) > 0).all()
+
+
+def test_hold_loss_mask_region(tmp_path):
+    """With an overlay, only vertices inside the placed alpha mask are
+    held (the placement is the same machinery the losses use)."""
+    import numpy as np
+    from PIL import Image
+
+    from vdsds.rendering.view_state import Overlay
+    from vdsds.representations.constraints import Constraint
+
+    # Opaque left half of a camera-sized png.
+    png = tmp_path / "hold_mask.png"
+    arr = np.zeros((64, 64, 4), np.uint8)
+    arr[..., :3] = 255
+    arr[:, :32, 3] = 255
+    Image.fromarray(arr, mode="RGBA").save(png)
+
+    camera = _hold_camera()
+    V_src = torch.tensor(
+        [[0.0, 0.0, 0.0], [-0.5, 0.0, 0.0], [0.5, 0.0, 0.0]]
+    )
+    delta = torch.tensor([[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]])
+    constraints = {
+        "cid_h": Constraint(
+            view=ViewState(camera=camera, overlay=Overlay(str(png))),
+            prompt="",
+            type="hold",
+        )
+    }
+    script = _train_script(constraints, device="cpu")
+    script.config = Config({"loss": {"hold_visible_only": False}})
+    script.model.model.V = V_src
+    mesh = _hold_mesh(V_src, delta)
+    script.model.deformed = lambda cam: mesh
+
+    # Independent expectation: project through the same camera and
+    # sample the placed overlay's alpha.
+    placed = Overlay(str(png)).image(camera.H, camera.W)
+    mask = placed[0, 0] > 0.5
+    uv = camera.project_w2i(V_src)
+    selected = [
+        i
+        for i in range(len(V_src))
+        if mask[int(uv[i, 1].round()), int(uv[i, 0].round())] and uv[i, 0] >= 0 and uv[i, 0] < camera.W and uv[i, 1] >= 0 and uv[i, 1] < camera.H
+    ]
+    assert len(selected) > 0 and len(selected) < 3  # the mask splits them
+    loss = script.hold_loss()
+    expected = (delta[selected] ** 2).sum(dim=-1).mean()
+    assert torch.allclose(loss.detach(), expected, atol=1e-6)
+
+
+def test_hold_loss_visible_only_weighting():
+    """'hold_visible_only' weights by front-facing visibility: a mesh
+    whose normals face away from the camera yields zero loss."""
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera
+
+    camera = _hold_camera()
+    V_src = torch.tensor([[0.0, 0.0, 0.0], [0.4, 0.0, 0.0], [0.0, 0.4, 0.0]])
+    delta = torch.tensor([[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]])
+
+    def _script(flip):
+        constraints = {
+            "cid_h": Constraint(
+                view=ViewState(camera=camera.copy()), prompt="", type="hold"
+            )
+        }
+        script = _train_script(constraints, device="cpu")
+        script.config = Config({"loss": {"hold_visible_only": True}})
+        script.model.model.V = V_src
+        mesh = _hold_mesh(V_src, delta, flip=flip)
+        script.model.deformed = lambda cam: mesh
+        return script, mesh
+
+    # Orient the triangle so its normals face the camera, then away.
+    normals = None
+    script, mesh = _script(flip=False)
+    normals = mesh.vertex_normals_normalized[0]
+    to_cam = camera.location - (V_src[0] + delta[0])
+    facing = float((normals * to_cam / to_cam.norm()).sum())
+    flipped = facing < 0
+
+    loss_flat, mesh_flat = _script(flip=flipped)
+    flat = loss_flat.hold_loss().detach()
+    assert flat > 0
+
+    loss_back, mesh_back = _script(flip=not flipped)
+    back = loss_back.hold_loss().detach()
+    # All normals face away: every visibility weight is 0 -> zero loss.
+    assert back.item() == 0.0
+
+
+def test_hold_loss_requires_hold_constraints():
+    script = _train_script({}, device="cpu")
+    with pytest.raises(ValueError, match="'hold'-type"):
+        script.hold_loss()
+
+
+def test_hold_constraints_excluded_from_prompts():
+    from vdsds.representations.constraints import Constraint
+    from vdsds.rendering.camera import Camera
+
+    constraints = {
+        "cid_p": Constraint(
+            view=ViewState(camera=Camera()), prompt="a moose", type="image"
+        ),
+        "cid_h": Constraint(
+            view=ViewState(camera=Camera()), prompt="hold label", type="hold"
+        ),
+    }
+    script = _train_script(constraints, device="cpu")
+    prompts, anchors = script.get_constraint_prompts()
+    assert prompts == ["a moose"]  # the hold label is not a concept
+    assert len(anchors) == 1
+
+
+def test_regularizer_losses_wire_hold():
+    script = _train_script({}, device="cpu")
+    script.config = Config(
+        {
+            "loss": {
+                "diffusion": 1.0,
+                "jacobian": 0.0,
+                "composed_jacobian": 0.0,
+                "view_dependence": 0.0,
+                "laplacian": 0.0,
+                "volume": 0.0,
+                "volume_eval_points": 8,
+                "silhouette": 0.0,
+                "depth": 0.0,
+                "constraint_sds": 0.0,
+                "hold": 2.0,
+            }
+        }
+    )
+    script.hold_loss = lambda: torch.tensor(1.5)
+    regs = script._regularizer_losses(cameras=[], accum_steps=2)
+    assert regs["hold"] == (torch.tensor(1.5), 2.0)
+
+
 def test_constraint_sds_requires_df():
     from vdsds.rendering.camera import Camera
     from vdsds.representations.constraints import Constraint
@@ -748,6 +954,7 @@ def test_regularizer_losses_wire_constraint_steps():
                 "silhouette": 2.0,
                 "depth": 0.5,
                 "constraint_sds": 0.0,
+                "hold": 0.0,
             }
         }
     )
@@ -775,6 +982,7 @@ def test_regularizer_losses_skip_zero_constraint_steps():
                 "silhouette": 0.0,
                 "depth": 0.0,
                 "constraint_sds": 0.0,
+                "hold": 0.0,
             }
         }
     )

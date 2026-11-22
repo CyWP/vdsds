@@ -24,7 +24,9 @@ from ..rendering.shader import (
 )
 from ..representations.constraints import (
     DEPTH_TYPES,
+    HOLD_TYPES,
     IMAGE_TYPES,
+    PROMPT_TYPES,
     SILHOUETTE_TYPES,
     Constraint,
     ConstraintManager,
@@ -218,6 +220,14 @@ class TrainModelSDS(ViewableScript):
             # window, so the comparison is pixel-aligned without dead
             # background).
             "constraint_sds_border": 16,
+            # Zero-displacement pin over 'hold' constraints (see
+            # TrainModelSDS.hold_loss): vertices projecting into the
+            # constraint's region keep their source position.
+            "hold": 0.0,
+            # Weight each held vertex's penalty by its front-facing
+            # visibility (clamped normal-to-camera dot) instead of a
+            # flat penalty over the whole selected region.
+            "hold_visible_only": False,
         },
         "model": {"name": "mesh"},
         "deformation": {
@@ -608,6 +618,91 @@ class TrainModelSDS(ViewableScript):
             embed = self.constraint_cond_embed(cid)
             losses.append(df.DDS(render[sl], ref_rgb[sl], embed, t_max=t_max)["loss_sds"])
         return torch.stack(losses).mean()
+
+    def hold_loss(self) -> Float[Tensor, ""]:
+        """Zero-displacement loss over the regions of the 'hold'
+        constraints.
+
+        A hold constraint pins geometry: every base-mesh vertex whose
+        projection falls inside the constraint's captured region (the
+        overlay alpha mask when an overlay is attached, the whole
+        frame otherwise) and that sits in front of the constraint
+        camera must keep its source position — the squared displacement
+        ``V_deformed - V_source`` is penalized there. With
+        'loss.hold_visible_only', each vertex's penalty is weighted by
+        its front-facing visibility (clamped normal-to-camera dot),
+        so occluded/back-facing geometry that happens to project into
+        the region is not held.
+
+        Selection uses source-mesh projections (detached); the gradient
+        flows through the deformed positions only. The loss is a
+        per-epoch regularizer over the fixed constraint set (no
+        accumulation-step compensation), wired via ``loss.hold``.
+
+        Returns:
+            out: Scalar visibility-weighted mean squared displacement
+                over all held vertices (0 when a hold constraint's
+                region selects no vertices).
+        """
+        holds = select_constraints(self.constraints, HOLD_TYPES)
+        if not holds:
+            raise ValueError(
+                "Hold loss requires 'hold'-type constraints with views; "
+                "none are loaded."
+            )
+        visible_only = bool(self.config.loss.hold_visible_only)
+        terms = []
+        for cid, constraint in holds.items():
+            view = constraint.view
+            camera = view.camera if view is not None else None
+            if camera is None:
+                print(f"Skipping hold constraint {cid[:6]}: no view attached.")
+                continue
+            camera = camera.copy().to(self.device)
+            data = self.model.deformed(camera)
+            V_def = data.V  # (N, 3), gradient path
+            V_src = self.model.model.V.detach()  # (N, 3)
+            # Image-space selection: source-mesh projections inside the
+            # captured region. Whole frame when no overlay is attached.
+            if view.overlay is not None:
+                placed = view.overlay.image(camera.H, camera.W)  # (1, 4, H, W)
+                mask = placed[:, 0] > 0.5  # (1, H, W)
+            else:
+                mask = torch.ones(
+                    (1, camera.H, camera.W), dtype=torch.bool, device=camera.device
+                )
+            uv = camera.project_w2i(V_src)  # (N, 2) pixels (u, v)
+            u, v = uv[:, 0], uv[:, 1]
+            in_bounds = (
+                (u >= 0) & (u < camera.W) & (v >= 0) & (v < camera.H)
+            )
+            ui = u.long().clamp(0, camera.W - 1)
+            vi = v.long().clamp(0, camera.H - 1)
+            inside = in_bounds & mask[0, vi, ui].to(V_src.device)
+            # Visibility: only vertices in front of the camera can be
+            # meaningfully 'seen' by the capture.
+            cam_pts = camera.project_w2c(V_src)
+            inside &= cam_pts[:, 2] > 0
+            if inside.sum() == 0:
+                print(f"Skipping hold constraint {cid[:6]}: region selects no vertices.")
+                continue
+            if visible_only:
+                # Continuous front-facing weight: clamped normal-to-camera
+                # dot of the deformed surface.
+                normals = data.vertex_normals_normalized  # (N, 3)
+                to_cam = camera.location - V_def
+                to_cam = to_cam / to_cam.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                weight = (normals * to_cam).sum(dim=-1).clamp(0.0, 1.0)
+            else:
+                weight = torch.ones_like(inside, dtype=V_def.dtype)
+            disp = V_def - V_src  # (N, 3)
+            w = weight * inside.to(V_def.dtype)  # (N,)
+            terms.append((disp**2).sum(dim=-1).mul(w).sum() / w.sum().clamp_min(1e-8))
+        if not terms:
+            # Differentiable zero through the deformation graph.
+            camera = next(iter(holds.values())).view.camera.copy().to(self.device)
+            return (self.model.deformed(camera).V * 0.0).sum()
+        return torch.stack(terms).mean()
 
     def run(self):
         device = self.device
@@ -1102,6 +1197,8 @@ class TrainModelSDS(ViewableScript):
                 self.constraint_sds_loss(),
                 cfg.loss.constraint_sds,
             )
+        if cfg.loss.hold != 0.0:
+            regs["hold"] = (self.hold_loss(), cfg.loss.hold)
         return regs
 
     def _apply_regularizers(
@@ -1133,7 +1230,11 @@ class TrainModelSDS(ViewableScript):
             out: (prompts, anchors) with one normalized (3,) anchor per
                 prompt.
         """
-        prompt_map = prompts_from_constraints(self.constraints)
+        prompt_map = prompts_from_constraints(
+            # 'hold' constraints are geometric pins; their text is a
+            # label, not a concept prompt.
+            select_constraints(self.constraints, PROMPT_TYPES)
+        )
         anchor_map = anchors_from_constraints(
             self.constraints, self.model.model.centroid
         )

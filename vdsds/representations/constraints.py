@@ -12,16 +12,29 @@ from ..rendering.view_state import ViewState
 
 # Constraint kinds. 'image' adds the paired-noise DDS loss (the image is
 # a diffusion reference); 'depth'/'silhouette' select the corresponding
-# regularizer; 'form' enables both. None is the legacy behavior: the
-# constraint participates in depth AND silhouette (and prompts) as
-# before the type field existed.
-CONSTRAINT_TYPES: tuple[str, ...] = ("depth", "silhouette", "form", "image")
+# regularizer; 'form' enables both; 'hold' pins the deformation
+# displacement to zero over the constraint's captured region. None is
+# the legacy behavior: the constraint participates in depth AND
+# silhouette (and prompts) as before the type field existed.
+CONSTRAINT_TYPES: tuple[str, ...] = (
+    "depth",
+    "silhouette",
+    "form",
+    "image",
+    "hold",
+)
 
 # Type participation per regularizer. Legacy (None) constraints keep
 # their old all-of-the-above behavior except for DDS ('image' only).
+# 'hold' is purely geometric: it never feeds prompts, depth,
+# silhouette or DDS.
 DEPTH_TYPES: tuple[str | None, ...] = (None, "depth", "form")
 SILHOUETTE_TYPES: tuple[str | None, ...] = (None, "silhouette", "form")
 IMAGE_TYPES: tuple[str | None, ...] = ("image",)
+HOLD_TYPES: tuple[str | None, ...] = ("hold",)
+# 'hold' constraints are geometric pins; their text (if any) is a
+# label, not a concept prompt.
+PROMPT_TYPES: tuple[str | None, ...] = (None, "depth", "silhouette", "form", "image")
 
 
 def select_constraints(

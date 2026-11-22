@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
             ("Silhouette", "silhouette"),
             ("Form (depth+silhouette)", "form"),
             ("Image (DDS)", "image"),
+            ("Hold (pin geometry)", "hold"),
         ):
             self.constraint_type_combo.addItem(name, ctype)
         action_layout.addWidget(self.constraint_type_combo)
