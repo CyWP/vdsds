@@ -794,6 +794,35 @@ class TrainModelSDS(ViewableScript):
         self.constraints = self.get_constraints()
         if self.constraints:
             print(f"Loaded {len(self.constraints)} constraint(s) for training.")
+        else:
+            # The constraint-view regularizers default to non-zero
+            # weights for the constraint workflow; without constraints
+            # they would all raise, so they are disabled explicitly.
+            disabled = [
+                name
+                for name in (
+                    "silhouette",
+                    "depth",
+                    "constraint_sds",
+                    "hold",
+                )
+                if config.loss.get(name, 0.0) != 0.0
+            ]
+            for name in disabled:
+                config.loss[name] = 0.0
+            if disabled:
+                print(
+                    "No constraints loaded; disabling the constraint-view "
+                    f"losses ({', '.join(disabled)})."
+                )
+        if config.path.run_dir is None:
+            # CLI runs often omit the run dir; derive one so finish()
+            # has somewhere to write the deformation, logs and config.
+            from datetime import datetime
+
+            run_dir = Path("outputs") / datetime.now().strftime("%Y%m%d_%H%M%S")
+            config.path.run_dir = str(run_dir)
+            print(f"No 'path.run_dir' set; artifacts will go to {run_dir}.")
         if self.constraints and config.loss.depth != 0.0:
             # DA v3 load/infer/unload happens inside this single call,
             # before training starts; nothing of it runs per epoch.
