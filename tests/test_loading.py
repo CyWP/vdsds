@@ -65,6 +65,43 @@ def test_vertextured_bake_matches_image_space(tmp_path):
     assert torch.allclose(colors, expected, atol=1e-4)
 
 
+def test_normalize_uv_folds_out_of_range():
+    """In-range UVs pass through; a [-1, 0] v range is negated (the
+    mirrored-v authoring convention, not wrapped); other out-of-range
+    axes wrap by integer period."""
+    from vdsds.utils.loading import _normalize_uv
+
+    uv = torch.tensor([[0.1, 0.2], [0.9, 0.8]])
+    assert torch.equal(_normalize_uv(uv), uv)  # in-range: untouched
+
+    # Mirrored-v asset (like retextured exports): v in [-1, 0].
+    mirrored = torch.tensor([[0.1, -0.2], [0.9, -0.8]])
+    out = _normalize_uv(mirrored)
+    assert torch.allclose(out[:, 1], torch.tensor([0.2, 0.8]), atol=1e-6)
+    assert torch.allclose(out[:, 0], mirrored[:, 0])
+
+    # Wrapped/repeat UVs (v beyond one period) fold by remainder.
+    wrapped = torch.tensor([[0.1, 1.3], [0.9, -2.2]])
+    out = _normalize_uv(wrapped)
+    assert torch.allclose(out[:, 1], torch.tensor([0.3, 0.8]), atol=1e-6)
+
+
+def test_load_glb_negates_mirrored_v_assets(tmp_path):
+    """A glb authored with v = -v_std (entire v range in [-1, 0])
+    loads with the negation applied, so the bake matches the image."""
+    from vdsds.utils.loading import load_glb
+
+    uv = _corner_uvs().copy()
+    uv[:, 1] = -uv[:, 1]  # mirrored-v authoring
+    data = load_glb(_write_glb(tmp_path, uv))
+    assert (data["uv_co"][:, 1] >= 0).all()
+    colors = _bake(data)
+    expected = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]]
+    )
+    assert torch.allclose(colors, expected, atol=1e-4)
+
+
 def test_load_obj_flips_v_to_topdown(tmp_path):
     """OBJ 'vt' v runs bottom-up; the loader standardizes uv_co to
     (u, v) top-down, so the baked colors match the image again."""

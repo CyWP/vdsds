@@ -8,6 +8,36 @@ from torch import Tensor
 from .img import Splimage
 
 
+def _normalize_uv(uv: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Folds loader UVs into the [0, 1] x [0, 1] sampling range.
+
+    Per axis, in order:
+    - range within [0, 1]: kept (the standard convention).
+    - range within [-1, 0]: negated. Some assets (e.g. retextured
+      exports) author v = -v_std against the image as stored; wrapping
+      such UVs would mirror the texture instead (verified visually).
+    - otherwise: wrapped by integer period (``torch.remainder``), the
+      repeat/atlas case.
+
+    Args:
+        uv: UV coordinates (N, 2).
+
+    Returns:
+        out: UV coordinates (N, 2) with both axes in [0, 1].
+    """
+    out = uv.clone()
+    for axis in (0, 1):
+        vals = uv[:, axis]
+        lo, hi = vals.min(), vals.max()
+        if lo >= -eps and hi <= 1 + eps:
+            continue
+        if lo >= -1 - eps and hi <= eps:
+            out[:, axis] = -vals
+        else:
+            out[:, axis] = torch.remainder(vals, 1.0)
+    return out
+
+
 def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     assert path.suffix == ".obj"
     content = {}
@@ -73,6 +103,7 @@ def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         # standardize uv_co to (u, v), top-down image space (matching
         # dr.texture and the Splimage samplers), so v is flipped here.
         uv_co[:, 1] = 1 - uv_co[:, 1]
+        uv_co = _normalize_uv(uv_co)
         V[:, 1] = -V[:, 1]
     return {
         "V": V,
@@ -119,6 +150,8 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
         mtl = Splimage(mesh.visual.material.baseColorTexture, force_rgba=False)._tensor[
             :, :3
         ]
+    if uv_co is not None:
+        uv_co = _normalize_uv(uv_co)
     # V[:, 2] *= -1
     V = -torch.stack([V[:, 2], V[:, 0], V[:, 1]], dim=1)
     return {
