@@ -89,6 +89,12 @@ class ViewableScript(Script):
             },
             "model": {
                 "name": "textured_mesh",
+                # Per-asset UV convention override: glb exporters
+                # disagree with the glTF spec and the difference is not
+                # detectable from the data ('cow.glb' needs 'flip_v',
+                # 'mickey_mouse_retextured.glb' is auto-negated by the
+                # loader). 'native' trusts the loaders' standardization.
+                "uv_convention": "native",
             },
             # Constraints live in-memory by default; set 'constraints'
             # (or the CLI --constraints flag) to load/persist a JSON file.

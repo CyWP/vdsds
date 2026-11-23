@@ -102,6 +102,31 @@ def test_load_glb_negates_mirrored_v_assets(tmp_path):
     assert torch.allclose(colors, expected, atol=1e-4)
 
 
+def test_get_model_uv_convention_override(tmp_path):
+    """'model.uv_convention' overrides the loaders' standardization per
+    asset: 'flip_v' mirrors the bake vertically, 'native' (default)
+    keeps it."""
+    from vdsds.representations import get_model
+
+    path = _write_glb(tmp_path, _corner_uvs())
+    colors_native = get_model(
+        path, name="vertextured_mesh", uv_convention="native"
+    ).texture.cpu()
+    expected_native = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]]
+    )
+    assert torch.allclose(colors_native, expected_native, atol=1e-4)
+
+    colors_flip = get_model(
+        path, name="vertextured_mesh", uv_convention="flip_v"
+    ).texture.cpu()
+    # v mirrored: top-row colors and bottom-row colors swap.
+    expected_flip = torch.tensor(
+        [[0.0, 0.0, 1.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    assert torch.allclose(colors_flip, expected_flip, atol=1e-4)
+
+
 def test_load_obj_flips_v_to_topdown(tmp_path):
     """OBJ 'vt' v runs bottom-up; the loader standardizes uv_co to
     (u, v) top-down, so the baked colors match the image again."""

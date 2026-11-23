@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from ..utils.loading import load_glb, load_obj
+from ..utils.loading import _apply_uv_convention, load_glb, load_obj
 from .base import Model
 from .mesh import Mesh
 from .textured_mesh import TexturedMesh
@@ -13,7 +13,10 @@ MODEL_REGISTRY: dict[str, type[Model]] = {
 
 
 def get_model(
-    path: str | Path | dict[str, Any], name: str = "textured_mesh", **kwargs
+    path: str | Path | dict[str, Any],
+    name: str = "textured_mesh",
+    uv_convention: str = "native",
+    **kwargs,
 ) -> Model:
     if isinstance(path, dict):
         if "class" in path:
@@ -31,6 +34,12 @@ def get_model(
             data = load_glb(path)
         else:
             raise ValueError(f"File path '{path}' is an invalid format.")
+        # Per-asset UV convention override (see _apply_uv_convention):
+        # exporter conventions are not detectable from the data, so
+        # assets that disagree with the loaders' standardized (u, v)
+        # top-down coordinates are corrected explicitly here.
+        if data.get("uv_co") is not None:
+            data["uv_co"] = _apply_uv_convention(data["uv_co"], uv_convention)
     if name == "mesh":
         return Mesh.from_mesh_data(**data, **kwargs)
     elif name == "textured_mesh":

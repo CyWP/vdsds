@@ -38,6 +38,39 @@ def _normalize_uv(uv: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return out
 
 
+def _apply_uv_convention(uv: torch.Tensor, convention: str) -> torch.Tensor:
+    """Applies a per-asset UV convention override to standardized UVs.
+
+    glb files from different exporters disagree with the glTF spec, and
+    the difference is not detectable from the data alone (a flipped and
+    a native UV set are both in-range valid floats): 'cow.glb' authors
+    v bottom-up (needs the flip), 'mickey_mouse_retextured.glb' authors
+    v = -v_std (auto-negated by :func:`_normalize_uv`), spec-compliant
+    assets need neither. The convention is therefore an explicit
+    per-model config ('model.uv_convention'), applied on top of the
+    loaders' standardized (u, v) top-down coordinates.
+
+    Args:
+        uv: Standardized UV coordinates (N, 2), both axes in [0, 1].
+        convention: 'native' (no-op), 'flip_v' (1 - v: bottom-up
+            authored v) or 'negate_v' (-v: mirrored-v authoring whose
+            range was not auto-folded).
+
+    Returns:
+        out: UV coordinates (N, 2) under the given convention.
+    """
+    if convention == "native":
+        return uv
+    if convention == "flip_v":
+        return torch.stack([uv[:, 0], 1 - uv[:, 1]], dim=-1)
+    if convention == "negate_v":
+        return torch.stack([uv[:, 0], -uv[:, 1]], dim=-1)
+    raise ValueError(
+        f"UV convention '{convention}' is invalid; choose from "
+        "'native', 'flip_v', 'negate_v'."
+    )
+
+
 def load_obj(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     assert path.suffix == ".obj"
     content = {}
