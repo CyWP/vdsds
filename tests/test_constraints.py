@@ -1228,6 +1228,24 @@ def test_view_interactions(tmp_path, png_path, no_frame_loop):
         assert view.viewer.camera.co.radius == radius0
 
         w.keyReleaseEvent(QKeyEvent(QEvent.KeyRelease, K_ALT, Qt.NoModifier))
+
+        # ----- frame emission squeezes the batch before the overlay hook
+        # (Regression: with an overlay hook that draws nothing -- flat
+        # prompts without a view cache -- the batched (1, H, W, C) frame
+        # reached the viewport's format check and raised.)
+        h, w = view.window.dimensions
+        view.viewer.get_render = lambda hh, ww, overlay=None: torch.rand(1, 3, hh, ww)
+        view.overlay = lambda camera: None  # train script's hook, no viewset
+        frames = []
+        view.frame_ready.connect(frames.append)
+        view.update()
+        assert len(frames) == 1
+        assert frames[0].shape == (h, w, 3)
+        assert frames[0].dtype == np.uint8
+        # A hook that draws text keeps working (valid HxWxC in and out).
+        view.overlay = lambda camera: "overlay text"
+        view.update()
+        assert frames[1].shape == (h, w, 3)
     finally:
         view.close()
 

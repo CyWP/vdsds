@@ -428,12 +428,14 @@ class View(QApplication):
             image = (image.permute(0, 2, 3, 1).cpu().contiguous().numpy() * 255).astype(
                 np.uint8
             )
+            # Squeeze the batch dim BEFORE the overlay hook: the hook may
+            # draw nothing (return None/'' — e.g. flat prompts with no
+            # view cache), and the viewport only accepts HxWx{C} frames.
+            image = image[0]
             if self.overlay is not None:
                 text = self.overlay(self.viewer.camera)
                 if text:
-                    image = draw_text_overlay(image[0], text)
-            else:
-                image = image[0]
+                    image = draw_text_overlay(image, text)
             self.frame_ready.emit(image)
         except Exception:
             traceback.print_exc()
