@@ -359,6 +359,49 @@ class TrainModelSDS(ViewableScript):
             return {}
         return ConstraintManager(Path(path)).items()
 
+    def _prune_constraint_losses(self):
+        """Zeroes constraint-view loss weights with no qualifying
+        constraints.
+
+        The constraint-workflow defaults (e.g. loss.silhouette = 100)
+        assume qualifying constraints exist; a run whose constraint set
+        contains none of a loss's eligible kinds (e.g. only 'image'
+        constraints for the silhouette weight, or no constraints at
+        all) would otherwise raise at the first epoch. Each loss is
+        disabled explicitly, with a notice, when its eligible set is
+        empty: silhouette/depth need overlays, DDS needs 'image'
+        constraints, hold needs 'hold' constraints -- all need views.
+        """
+        eligible = {
+            "silhouette": (SILHOUETTE_TYPES, True),
+            "depth": (DEPTH_TYPES, True),
+            "constraint_sds": (IMAGE_TYPES, True),
+            "hold": (HOLD_TYPES, False),
+        }
+        loss_cfg = self.config.get("loss", None)
+        if loss_cfg is None:
+            return
+        disabled = []
+        for name, (types, needs_overlay) in eligible.items():
+            if loss_cfg.get(name, 0.0) == 0.0:
+                continue
+            qualifies = [
+                c
+                for c in self.constraints.values()
+                if c.type in types
+                and c.view is not None
+                and c.view.camera is not None
+                and (c.view.overlay is not None or not needs_overlay)
+            ]
+            if not qualifies:
+                loss_cfg[name] = 0.0
+                disabled.append(name)
+        if disabled:
+            print(
+                "No qualifying constraints for the constraint-view "
+                f"loss(es) {', '.join(disabled)}; disabled."
+            )
+
     def get_depth_renderer(self) -> Renderer:
         """Cached depth renderer (clip-space z/w, ``NO_DEPTH`` background)."""
         if not hasattr(self, "_depth_renderer"):
@@ -794,27 +837,7 @@ class TrainModelSDS(ViewableScript):
         self.constraints = self.get_constraints()
         if self.constraints:
             print(f"Loaded {len(self.constraints)} constraint(s) for training.")
-        else:
-            # The constraint-view regularizers default to non-zero
-            # weights for the constraint workflow; without constraints
-            # they would all raise, so they are disabled explicitly.
-            disabled = [
-                name
-                for name in (
-                    "silhouette",
-                    "depth",
-                    "constraint_sds",
-                    "hold",
-                )
-                if config.loss.get(name, 0.0) != 0.0
-            ]
-            for name in disabled:
-                config.loss[name] = 0.0
-            if disabled:
-                print(
-                    "No constraints loaded; disabling the constraint-view "
-                    f"losses ({', '.join(disabled)})."
-                )
+        self._prune_constraint_losses()
         if config.path.run_dir is None:
             # CLI runs often omit the run dir; derive one so finish()
             # has somewhere to write the deformation, logs and config.

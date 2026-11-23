@@ -1027,6 +1027,59 @@ def test_constraint_sds_requires_image_constraints():
         script.constraint_sds_loss()
 
 
+def test_prune_constraint_losses_disables_nonqualifying(tmp_path):
+    """A constraint set that only qualifies for some losses disables the
+    others (e.g. image-only DDS constraints under the silhouette
+    default weight): the run must not crash at the first epoch."""
+    import numpy as np
+
+    from vdsds.rendering.camera import Camera
+    from vdsds.rendering.view_state import Overlay
+    from vdsds.representations.constraints import Constraint
+    from vdsds.scripts.train_sds import TrainModelSDS
+
+    png = tmp_path / "ref.png"
+    arr = np.zeros((32, 32, 4), np.uint8)
+    arr[..., :3] = 255
+    arr[..., 3] = 255
+    Image.fromarray(arr, mode="RGBA").save(png)
+    constraints = {
+        "cid_i1": Constraint(
+            view=ViewState(camera=Camera(), overlay=Overlay(str(png))),
+            prompt="front view",
+            type="image",
+        ),
+        "cid_i2": Constraint(
+            view=ViewState(camera=Camera(), overlay=Overlay(str(png))),
+            prompt="back view",
+            type="image",
+        ),
+    }
+    script = _train_script(constraints, device="cpu")
+    # Real-run config: class defaults merged in (loss.silhouette = 100);
+    # DDS enabled explicitly (it is opt-in).
+    config = Config()
+    config.update(TrainModelSDS._default_config_overrides)
+    config.loss.constraint_sds = 1.0
+    script.config = config
+    script._prune_constraint_losses()
+    assert script.config.loss.silhouette == 0.0
+    assert script.config.loss.constraint_sds == 1.0  # image ones qualify
+
+    # Mixed set: a qualifying form constraint keeps silhouette alive.
+    constraints["cid_f"] = Constraint(
+        view=ViewState(camera=Camera(), overlay=Overlay(str(png))),
+        prompt="",
+        type="form",
+    )
+    script2 = _train_script(constraints, device="cpu")
+    config2 = Config()
+    config2.update(TrainModelSDS._default_config_overrides)
+    script2.config = config2
+    script2._prune_constraint_losses()
+    assert script2.config.loss.silhouette != 0.0
+
+
 def test_regularizer_losses_wire_constraint_steps():
     script = _train_script({}, device="cpu")
     script.config = Config(
