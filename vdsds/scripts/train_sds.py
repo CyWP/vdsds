@@ -819,7 +819,9 @@ class TrainModelSDS(ViewableScript):
             )
             ui = u.long().clamp(0, camera.W - 1)
             vi = v.long().clamp(0, camera.H - 1)
-            inside = in_bounds & mask[0, vi, ui].to(V_src.device)
+            # The mask lives on the overlay's device (typically CPU);
+            # move it to the projection's device for the gather.
+            inside = in_bounds & mask[0].to(uv.device)[vi, ui]
             # Visibility: only vertices in front of the camera can be
             # meaningfully 'seen' by the capture.
             cam_pts = camera.project_w2c(V_src)

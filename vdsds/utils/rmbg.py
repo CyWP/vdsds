@@ -21,6 +21,7 @@ be swapped in via code/config without touching the call sites.
 from __future__ import annotations
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor
@@ -63,6 +64,12 @@ class BackgroundRemover:
         from transformers import AutoModelForImageSegmentation
 
         device = torch.device(device) if isinstance(device, str) else device
+        # transformers 5.x expects the new tie-weights attribute on
+        # remote-code models; RMBG-1.4's custom class predates it. The
+        # shim satisfies the load-time introspection (the model has no
+        # tied weights).
+        if not hasattr(nn.Module, "all_tied_weights_keys"):
+            nn.Module.all_tied_weights_keys = {}
         model = AutoModelForImageSegmentation.from_pretrained(
             cls._model_id, trust_remote_code=True
         )
@@ -107,9 +114,10 @@ class BackgroundRemover:
                         torch.tensor(cls._std, device=device)[None, :, None, None]
                     )
                     out = model(x)
-                    # The remote-code model returns a list/tuple of
-                    # logit maps; the first entry carries the matte.
-                    if isinstance(out, (list, tuple)):
+                    # The remote-code model returns (nested) lists of
+                    # logit maps; unwrap to the first tensor and keep the
+                    # matte channel.
+                    while isinstance(out, (list, tuple)):
                         out = out[0]
                     if out.shape[1] != 1:
                         out = out[:, :1]
