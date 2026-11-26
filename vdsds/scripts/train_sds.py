@@ -1220,6 +1220,10 @@ class TrainModelSDS(ViewableScript):
                 self.renderer = self.get_renderer()
             self._current_profile = profile
         self.config.update(phase)
+        # Phase overrides may re-enable constraint-view losses whose
+        # qualifying constraint set is empty; prune again on the merged
+        # config so a phase cannot crash the run.
+        self._prune_constraint_losses()
         # LR may arrive nested (Dict wrapping splits dotted keys) or dotted.
         lr = phase.get("optim.lr")
         if lr is None and isinstance(phase.get("optim"), Mapping):
