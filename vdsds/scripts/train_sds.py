@@ -591,6 +591,26 @@ class TrainModelSDS(ViewableScript):
         batch = getattr(self, "_embed_batch", 1)
         return text_embeds[idx * batch]
 
+    def get_dds_renderer(self) -> Renderer:
+        """Dedicated renderer for the DDS render branch.
+
+        Matches the chain the constraint references were captured with
+        (the viewer's half-Lambert camera-lit look), NOT the training
+        chain: the paired score difference must compare like with like,
+        otherwise the irreducible shading mismatch floods the delta and
+        the geometry signal drowns in it. No resize shader -- the
+        branch's crop window is applied at full camera resolution.
+        """
+        if not hasattr(self, "_dds_renderer"):
+            self._dds_renderer = Renderer.basic(
+                bg_color=torch.tensor(
+                    self.config.shader.bg_color, device=self.device
+                ),
+                shading="half",
+                device=self.device,
+            )
+        return self._dds_renderer
+
     def constraint_sds_loss(self, draws: int | None = None) -> Float[Tensor, ""]:
         """Paired-noise DDS loss over the 'image' constraints.
 
@@ -651,8 +671,13 @@ class TrainModelSDS(ViewableScript):
             # this branch only); deterministic camera-aligned light so
             # the paired difference stays content-driven.
             data = self.model.deformed(camera)
-            light = LightSource.from_camera(camera)
-            render = self.renderer(data, camera, light)["render"]  # (1, 3, H, W)
+            # Viewer-matching chain and light (the references were
+            # captured with it): the paired difference is then mostly
+            # geometry, not shading.
+            light = LightSource.from_camera(
+                camera, strength=torch.tensor(1.5, device=self.device)
+            )
+            render = self.get_dds_renderer()(data, camera, light)["render"]
             # Render content mask from the depth renderer (no grad): the
             # training render already composites its background away.
             with torch.no_grad():

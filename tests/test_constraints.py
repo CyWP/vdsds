@@ -1140,7 +1140,7 @@ def test_constraint_sds_loss_paired_shapes(tmp_path):
 
         return fn
 
-    script.renderer = fake_renderer
+    script.get_dds_renderer = lambda: fake_renderer
     script.get_depth_renderer = fake_depth_renderer
 
     dds_calls = []
