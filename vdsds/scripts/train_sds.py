@@ -640,8 +640,10 @@ class TrainModelSDS(ViewableScript):
             camera = view.camera.copy().to(self.device)
             # Reference: the placed overlay composited over the training
             # background (rmbg'd constraints carry their subject in the
-            # alpha channel, so only the subject remains).
-            placed = view.overlay.image(camera.H, camera.W)  # (1, 4, H, W)
+            # alpha channel, so only the subject remains). Overlays load
+            # on their source device (typically CPU); everything below
+            # runs on the script device.
+            placed = view.overlay.image(camera.H, camera.W).to(self.device)  # (1, 4, H, W)
             alpha = placed[:, 3:4]
             ref_rgb = alpha * placed[:, :3] + (1 - alpha) * bg[None, :, None, None]
             # Render at the constraint camera (gradient flows through
