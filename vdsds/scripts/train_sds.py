@@ -660,7 +660,6 @@ class TrainModelSDS(ViewableScript):
             )
         if draws is None:
             draws = int(self.config.loss.constraint_sds_draws)
-        border = int(self.config.loss.constraint_sds_border)
         t_max = float(self.config.loss.constraint_sds_t_max)
         # Fixed draw bank: pre-sampled once (the noise lives in the
         # fixed-size 64x64 latent, so (t, eps) pairs are reusable across
@@ -678,79 +677,92 @@ class TrainModelSDS(ViewableScript):
                 for _ in range(bank_size)
             ]
             self._dds_cursor = 0
-        bg = torch.tensor(
-            self.config.shader.bg_color, device=self.device, dtype=torch.float32
-        )
         losses = []
         for _ in range(draws):
             cid = ids[random.randrange(len(ids))]
             t, noise = self._dds_bank[self._dds_cursor % len(self._dds_bank)]
             self._dds_cursor += 1
-            view = self.constraints[cid].view
-            camera = view.camera.copy().to(self.device)
-            # Reference: the placed overlay composited over the training
-            # background (rmbg'd constraints carry their subject in the
-            # alpha channel, so only the subject remains). Overlays load
-            # on their source device (typically CPU); everything below
-            # runs on the script device.
-            placed = view.overlay.image(camera.H, camera.W).to(self.device)  # (1, 4, H, W)
-            alpha = placed[:, 3:4]
-            ref_rgb = alpha * placed[:, :3] + (1 - alpha) * bg[None, :, None, None]
-            # Render at the constraint camera (gradient flows through
-            # this branch only); deterministic camera-aligned light so
-            # the paired difference stays content-driven.
-            data = self.model.deformed(camera)
-            # Viewer-matching chain and light (the references were
-            # captured with it): the paired difference is then mostly
-            # geometry, not shading.
-            light = LightSource.from_camera(
-                camera, strength=torch.tensor(1.5, device=self.device)
-            )
-            render = self.get_dds_renderer()(data, camera, light)["render"]
-            # Render content mask from the depth renderer (no grad): the
-            # training render already composites its background away.
-            with torch.no_grad():
-                depth = self.get_depth_renderer()(data, camera, light)["depth"]
-            ren_mask = (depth >= 0.0).float()  # (1, 1, H, W)
-            # Shared content window: union of both extents (+border),
-            # so both crops align in pixel space. The window is computed
-            # at the camera resolution (masks live there); the training
-            # renderer may resize its output (shader.resize), so the
-            # render-side crop indices are scaled to its actual size.
-            union = ((ren_mask[:, 0] + alpha[:, 0]) > 0.0).float()  # (1, H, W)
-            window = torch.zeros_like(placed)
-            window[:, 3] = union
-            top, bottom, left, right = ImgUtils.crop_alpha_bounds(
-                window, border=border
-            )
-            h, w = camera.H, camera.W
-            r_h, r_w = render.shape[-2:]
-            sl = (
-                slice(None),
-                slice(None),
-                slice(round(top * r_h / h), r_h - round(bottom * r_h / h)),
-                slice(round(left * r_w / w), r_w - round(right * r_w / w)),
-            )
-            ref_sl = (
-                slice(None),
-                slice(None),
-                slice(top, h - bottom),
-                slice(left, w - right),
-            )
-            render_crop = render[sl]
-            ref_crop = ref_rgb[ref_sl]
-            # The branches must match exactly for the paired score
-            # difference; the reference is resampled to the (resized)
-            # render branch's crop size.
-            ref_crop = F.interpolate(
-                ref_crop, size=render_crop.shape[-2:], mode="bilinear",
-                align_corners=False,
-            )
-            embed = self.constraint_cond_embed(cid)
-            losses.append(
-                df.DDS(render_crop, ref_crop, embed, t=t, noise=noise)["loss_sds"]
-            )
+            losses.append(self.constraint_sds_draw(cid, t, noise))
         return torch.stack(losses).mean()
+
+    def constraint_sds_draw(
+        self,
+        cid: str,
+        t: Float[Tensor, "1"],
+        noise: Float[Tensor, "1 3 64 64"],
+    ) -> Float[Tensor, ""]:
+        """One paired-noise DDS draw against the constraint `cid`.
+
+        Shared body of :meth:`constraint_sds_loss` (also usable for
+        evaluation: call under no_grad with an explicit bank slot).
+        """
+        df = self._df
+        border = int(self.config.loss.constraint_sds_border)
+        bg = torch.tensor(
+            self.config.shader.bg_color, device=self.device, dtype=torch.float32
+        )
+        view = self.constraints[cid].view
+        camera = view.camera.copy().to(self.device)
+        # Reference: the placed overlay composited over the training
+        # background (rmbg'd constraints carry their subject in the
+        # alpha channel, so only the subject remains). Overlays load
+        # on their source device (typically CPU); everything below
+        # runs on the script device.
+        placed = view.overlay.image(camera.H, camera.W).to(self.device)  # (1, 4, H, W)
+        alpha = placed[:, 3:4]
+        ref_rgb = alpha * placed[:, :3] + (1 - alpha) * bg[None, :, None, None]
+        # Render at the constraint camera (gradient flows through
+        # this branch only); deterministic camera-aligned light so
+        # the paired difference stays content-driven.
+        data = self.model.deformed(camera)
+        # Viewer-matching chain and light (the references were
+        # captured with it): the paired difference is then mostly
+        # geometry, not shading.
+        light = LightSource.from_camera(
+            camera, strength=torch.tensor(1.5, device=self.device)
+        )
+        render = self.get_dds_renderer()(data, camera, light)["render"]
+        # Render content mask from the depth renderer (no grad): the
+        # training render already composites its background away.
+        with torch.no_grad():
+            depth = self.get_depth_renderer()(data, camera, light)["depth"]
+        ren_mask = (depth >= 0.0).float()  # (1, 1, H, W)
+        # Shared content window: union of both extents (+border),
+        # so both crops align in pixel space. The window is computed
+        # at the camera resolution (masks live there); the training
+        # renderer may resize its output (shader.resize), so the
+        # render-side crop indices are scaled to its actual size.
+        union = ((ren_mask[:, 0] + alpha[:, 0]) > 0.0).float()  # (1, H, W)
+        window = torch.zeros_like(placed)
+        window[:, 3] = union
+        top, bottom, left, right = ImgUtils.crop_alpha_bounds(
+            window, border=border
+        )
+        h, w = camera.H, camera.W
+        r_h, r_w = render.shape[-2:]
+        sl = (
+            slice(None),
+            slice(None),
+            slice(round(top * r_h / h), r_h - round(bottom * r_h / h)),
+            slice(round(left * r_w / w), r_w - round(right * r_w / w)),
+        )
+        ref_sl = (
+            slice(None),
+            slice(None),
+            slice(top, h - bottom),
+            slice(left, w - right),
+        )
+        render_crop = render[sl]
+        ref_crop = ref_rgb[ref_sl]
+        # The branches must match exactly for the paired score
+        # difference; the reference is resampled to the (resized)
+        # render branch's crop size.
+        ref_crop = F.interpolate(
+            ref_crop, size=render_crop.shape[-2:], mode="bilinear",
+            align_corners=False,
+        )
+        embed = self.constraint_cond_embed(cid)
+        return df.DDS(render_crop, ref_crop, embed, t=t, noise=noise)["loss_sds"]
 
     def hold_direction_weights(
         self, dirs: Float[Tensor, "N 3"]
