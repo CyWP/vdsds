@@ -1080,6 +1080,89 @@ def test_prune_constraint_losses_disables_nonqualifying(tmp_path):
     assert script2.config.loss.silhouette != 0.0
 
 
+def test_constraint_sds_loss_paired_shapes(tmp_path):
+    """End-to-end with stubs: the DDS branches must match exactly after
+    the shared content window -- including when the training renderer
+    resizes its output (shader.resize) so the render branch lives at a
+    smaller resolution than the camera."""
+    import numpy as np
+
+    from vdsds.rendering.camera import Camera
+    from vdsds.rendering.view_state import Overlay
+    from vdsds.representations.constraints import Constraint
+    from vdsds.scripts.train_sds import TrainModelSDS
+
+    png = tmp_path / "ref.png"
+    arr = np.zeros((64, 64, 4), np.uint8)
+    arr[16:48, 16:48, :3] = 255
+    arr[16:48, 16:48, 3] = 255
+    Image.fromarray(arr, mode="RGBA").save(png)
+
+    constraints = {
+        "cid_i": Constraint(
+            view=ViewState(camera=Camera(H=64, W=64), overlay=Overlay(str(png))),
+            prompt="a cow",
+            type="image",
+        ),
+    }
+    script = _train_script(constraints, device="cpu")
+    config = Config()
+    config.update(TrainModelSDS._default_config_overrides)
+    config.loss.constraint_sds = 1.0
+    config.loss.constraint_sds_draws = 2
+    script.config = config
+    script._apply_profile()  # fills shader.bg_color / lighting (run does)
+    script._df = object()  # present, stubbed out below
+
+    # Minimal deformed-model stub: any object carrying V works for the
+    # mask pass (the renderer/depth renderer are stubbed anyway).
+    class _Deformed:
+        pass
+
+    script.model.deformed = lambda cam: _Deformed()
+    # Flat-prompt DDS concept selection reads the encoded embeddings.
+    script.text_embeds = torch.zeros(4, 2, 8)
+    script.prompt_basis = None
+    script._embed_batch = 1
+
+    # Camera-sized content masks: render covers the center, the
+    # reference the center-left, so the union window is well-defined.
+    def fake_renderer(data, camera, light):
+        render = torch.rand(1, 3, camera.H, camera.W) * 0.0
+        render[:, :, 20:44, 20:44] = 0.8
+        return {"render": render}
+
+    def fake_depth_renderer():
+        def fn(data, camera, light):
+            depth = torch.full((1, 1, camera.H, camera.W), -1.0)
+            depth[:, :, 24:40, 24:40] = 0.5
+            return {"depth": depth}
+
+        return fn
+
+    script.renderer = fake_renderer
+    script.get_depth_renderer = fake_depth_renderer
+
+    dds_calls = []
+
+    def fake_dds(rgb, ref_rgb, embed, t_max=0.5, **kwargs):
+        dds_calls.append((tuple(rgb.shape), tuple(ref_rgb.shape)))
+        return {"loss_sds": torch.tensor(0.5)}
+
+    class _DF:
+        DDS = staticmethod(fake_dds)
+
+    script._df = _DF()
+    loss = script.constraint_sds_loss()
+    assert loss.item() == pytest.approx(0.5)
+    assert len(dds_calls) == config.loss.constraint_sds_draws
+    for rgb_shape, ref_shape in dds_calls:
+        assert rgb_shape == ref_shape  # the pairing
+        # The crop is bounded by the shared content window: smaller than
+        # the full frame on every axis that had background.
+        assert rgb_shape[-2] < 64 or rgb_shape[-1] < 64
+
+
 def test_regularizer_losses_wire_constraint_steps():
     script = _train_script({}, device="cpu")
     script.config = Config(

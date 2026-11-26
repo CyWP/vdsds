@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import torch
+import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor
 
@@ -658,7 +659,10 @@ class TrainModelSDS(ViewableScript):
                 depth = self.get_depth_renderer()(data, camera, light)["depth"]
             ren_mask = (depth >= 0.0).float()  # (1, 1, H, W)
             # Shared content window: union of both extents (+border),
-            # so both crops align in pixel space.
+            # so both crops align in pixel space. The window is computed
+            # at the camera resolution (masks live there); the training
+            # renderer may resize its output (shader.resize), so the
+            # render-side crop indices are scaled to its actual size.
             union = ((ren_mask[:, 0] + alpha[:, 0]) > 0.0).float()  # (1, H, W)
             window = torch.zeros_like(placed)
             window[:, 3] = union
@@ -666,14 +670,30 @@ class TrainModelSDS(ViewableScript):
                 window, border=border
             )
             h, w = camera.H, camera.W
+            r_h, r_w = render.shape[-2:]
             sl = (
+                slice(None),
+                slice(None),
+                slice(round(top * r_h / h), r_h - round(bottom * r_h / h)),
+                slice(round(left * r_w / w), r_w - round(right * r_w / w)),
+            )
+            ref_sl = (
                 slice(None),
                 slice(None),
                 slice(top, h - bottom),
                 slice(left, w - right),
             )
+            render_crop = render[sl]
+            ref_crop = ref_rgb[ref_sl]
+            # The branches must match exactly for the paired score
+            # difference; the reference is resampled to the (resized)
+            # render branch's crop size.
+            ref_crop = F.interpolate(
+                ref_crop, size=render_crop.shape[-2:], mode="bilinear",
+                align_corners=False,
+            )
             embed = self.constraint_cond_embed(cid)
-            losses.append(df.DDS(render[sl], ref_rgb[sl], embed, t_max=t_max)["loss_sds"])
+            losses.append(df.DDS(render_crop, ref_crop, embed, t_max=t_max)["loss_sds"])
         return torch.stack(losses).mean()
 
     def hold_direction_weights(
