@@ -655,7 +655,7 @@ class TrainModelSDS(ViewableScript):
             # Render content mask from the depth renderer (no grad): the
             # training render already composites its background away.
             with torch.no_grad():
-                depth = self.get_depth_renderer()(data.detach(), camera, light)["depth"]
+                depth = self.get_depth_renderer()(data, camera, light)["depth"]
             ren_mask = (depth >= 0.0).float()  # (1, 1, H, W)
             # Shared content window: union of both extents (+border),
             # so both crops align in pixel space.
