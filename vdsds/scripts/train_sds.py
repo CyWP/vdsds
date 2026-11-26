@@ -938,9 +938,17 @@ class TrainModelSDS(ViewableScript):
             run_dir = Path("outputs") / datetime.now().strftime("%Y%m%d_%H%M%S")
             config.path.run_dir = str(run_dir)
             print(f"No 'path.run_dir' set; artifacts will go to {run_dir}.")
+        def _phase_depth(p: dict) -> float:
+            # Schedule phases may carry dotted keys ('loss.depth') or
+            # nested dicts ({'loss': {'depth': ...}}) depending on how
+            # they were built (CLI JSON wrapping nests them).
+            v = p.get("loss.depth")
+            if v is None and isinstance(p.get("loss"), Mapping):
+                v = p["loss"].get("depth")
+            return v or 0.0
+
         depth_enabled = config.loss.depth != 0.0 or any(
-            (p.get("loss.depth") or 0) != 0
-            for p in (config.get("schedule") or [])
+            _phase_depth(p) != 0 for p in (config.get("schedule") or [])
         )
         if self.constraints and depth_enabled:
             # DA v3 load/infer/unload happens inside this single call,
