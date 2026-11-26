@@ -938,9 +938,15 @@ class TrainModelSDS(ViewableScript):
             run_dir = Path("outputs") / datetime.now().strftime("%Y%m%d_%H%M%S")
             config.path.run_dir = str(run_dir)
             print(f"No 'path.run_dir' set; artifacts will go to {run_dir}.")
-        if self.constraints and config.loss.depth != 0.0:
+        depth_enabled = config.loss.depth != 0.0 or any(
+            (p.get("loss.depth") or 0) != 0
+            for p in (config.get("schedule") or [])
+        )
+        if self.constraints and depth_enabled:
             # DA v3 load/infer/unload happens inside this single call,
             # before training starts; nothing of it runs per epoch.
+            # Schedule phases that enable the depth loss count too (the
+            # base config may leave it at 0 until a phase).
             self.prepare_constraint_depths()
         df = DeepFloydGuidance(config.diffusion, device)
         seed = config.optim.seed
