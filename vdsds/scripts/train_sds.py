@@ -215,6 +215,12 @@ class TrainModelSDS(ViewableScript):
             # (the paired difference loses its signal toward pure
             # noise).
             "constraint_sds_t_max": 0.5,
+            # Fixed (t, noise) draw bank for the DDS loss: per-step
+            # sampling noise buries the (subtle) paired signal under
+            # gradient variance, so draws are pre-sampled once and
+            # cycled -- the gradient becomes a consistent direction the
+            # optimizer can descend.
+            "constraint_sds_bank": 8,
             # Content-border pixels kept around the union of the
             # render's and the reference's content extents before the
             # latent encoding (both images are cropped to the same
@@ -622,11 +628,16 @@ class TrainModelSDS(ViewableScript):
         reference's alpha extent, plus 'loss.constraint_sds_border'
         pixels of margin), and passed to :meth:`DeepFloydGuidance.DDS`
         with the shared conditioning embedding
-        (:meth:`constraint_cond_embed`). The loss is a stochastic draw
-        over (t, noise), so it is averaged over
-        'loss.constraint_sds_draws' draws per call — treat it as a
-        per-epoch regularizer with no accumulation-step compensation,
-        like the other constraint-view losses.
+        (:meth:`constraint_cond_embed`).
+
+        The (t, noise) draws come from a fixed pre-sampled bank
+        ('loss.constraint_sds_bank', cycled) rather than fresh sampling
+        per call: with subtle targets the paired signal is small, and
+        per-step sampling noise buries it under gradient variance. The
+        loss is averaged over 'loss.constraint_sds_draws' draws per
+        call — treat it as a per-epoch regularizer with no
+        accumulation-step compensation, like the other constraint-view
+        losses.
 
         Returns:
             out: Scalar loss, averaged over the draws.
@@ -651,12 +662,30 @@ class TrainModelSDS(ViewableScript):
             draws = int(self.config.loss.constraint_sds_draws)
         border = int(self.config.loss.constraint_sds_border)
         t_max = float(self.config.loss.constraint_sds_t_max)
+        # Fixed draw bank: pre-sampled once (the noise lives in the
+        # fixed-size 64x64 latent, so (t, eps) pairs are reusable across
+        # every call and mesh state), cycled via a persistent cursor.
+        if not hasattr(self, "_dds_bank"):
+            bank_size = max(1, int(self.config.loss.constraint_sds_bank))
+            hi = int(df.min_step + t_max * (df.max_step - df.min_step))
+            self._dds_bank = [
+                (
+                    torch.randint(
+                        df.min_step, max(hi, df.min_step + 1), [1], device=self.device
+                    ),
+                    torch.randn((1, 3, 64, 64), device=self.device),
+                )
+                for _ in range(bank_size)
+            ]
+            self._dds_cursor = 0
         bg = torch.tensor(
             self.config.shader.bg_color, device=self.device, dtype=torch.float32
         )
         losses = []
         for _ in range(draws):
             cid = ids[random.randrange(len(ids))]
+            t, noise = self._dds_bank[self._dds_cursor % len(self._dds_bank)]
+            self._dds_cursor += 1
             view = self.constraints[cid].view
             camera = view.camera.copy().to(self.device)
             # Reference: the placed overlay composited over the training
@@ -718,7 +747,9 @@ class TrainModelSDS(ViewableScript):
                 align_corners=False,
             )
             embed = self.constraint_cond_embed(cid)
-            losses.append(df.DDS(render_crop, ref_crop, embed, t_max=t_max)["loss_sds"])
+            losses.append(
+                df.DDS(render_crop, ref_crop, embed, t=t, noise=noise)["loss_sds"]
+            )
         return torch.stack(losses).mean()
 
     def hold_direction_weights(

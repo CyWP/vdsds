@@ -1151,6 +1151,8 @@ def test_constraint_sds_loss_paired_shapes(tmp_path):
 
     class _DF:
         DDS = staticmethod(fake_dds)
+        min_step = 10
+        max_step = 900
 
     script._df = _DF()
     loss = script.constraint_sds_loss()
