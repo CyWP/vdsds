@@ -22,11 +22,18 @@ def _corner_uvs():
 
 
 def _write_glb(tmp_path, uv):
+    """Writes a glb embedding the given *raw, glTF-spec* UVs (v top-down).
+
+    trimesh's glb exporter writes v flipped (raw v = 1 - authored v,
+    because trimesh's internal TextureVisuals convention is v
+    bottom-up), so the authored v is flipped here to land the intended
+    raw coordinates in the file.
+    """
     V = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], np.float32)
     F = np.array([[0, 1, 2], [0, 2, 3]])
     mesh = trimesh.Trimesh(V, F, process=False)
     mesh.visual = trimesh.visual.texture.TextureVisuals(
-        uv=uv, image=Image.fromarray(_quad_image(), "RGBA")
+        uv=np.stack([uv[:, 0], 1 - uv[:, 1]], axis=1), image=Image.fromarray(_quad_image(), "RGBA")
     )
     path = tmp_path / "uvtest.glb"
     path.write_bytes(trimesh.exchange.export.export_glb(mesh))
@@ -40,8 +47,10 @@ def _bake(data):
 
 
 def test_load_glb_keeps_native_topdown_uv(tmp_path):
-    """glTF UVs are (u, v) top-down already; the loader must not flip
-    v (a 1-v flip mirrored textures vertically)."""
+    """The loader must return the raw, glTF-spec UVs (v top-down):
+    trimesh flips v on glb import (imported v = 1 - raw v), and the
+    loader undoes that flip (leaving it in mirrored every
+    spec-compliant asset's texture vertically)."""
     from vdsds.utils.loading import load_glb
 
     uv = _corner_uvs()

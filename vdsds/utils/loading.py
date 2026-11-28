@@ -9,7 +9,7 @@ from .img import Splimage
 
 
 def _normalize_uv(uv: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """Folds loader UVs into the [0, 1] x [0, 1] sampling range.
+    """Folds raw glTF UVs into the [0, 1] x [0, 1] sampling range.
 
     Per axis, in order:
     - range within [0, 1]: kept (the standard convention).
@@ -42,13 +42,14 @@ def _apply_uv_convention(uv: torch.Tensor, convention: str) -> torch.Tensor:
     """Applies a per-asset UV convention override to standardized UVs.
 
     glb files from different exporters disagree with the glTF spec, and
-    the difference is not detectable from the data alone (a flipped and
-    a native UV set are both in-range valid floats): 'cow.glb' authors
-    v bottom-up (needs the flip), 'mickey_mouse_retextured.glb' authors
-    v = -v_std (auto-negated by :func:`_normalize_uv`), spec-compliant
-    assets need neither. The convention is therefore an explicit
+    a bottom-up-authored and a spec-compliant UV set are both in-range
+    valid floats — not detectable from the data alone (e.g.
+    trimesh-authored exports write v bottom-up). Standardized UVs are
+    the raw, spec-compliant top-down coordinates (the trimesh import
+    flip is already undone in :func:`load_glb`), so assets that author
+    v bottom-up need the 'flip_v' override; it is therefore an explicit
     per-model config ('model.uv_convention'), applied on top of the
-    loaders' standardized (u, v) top-down coordinates.
+    standardized (u, v) top-down coordinates.
 
     Args:
         uv: Standardized UV coordinates (N, 2), both axes in [0, 1].
@@ -172,13 +173,18 @@ def load_glb(path: Path) -> dict[str, Shaped[Tensor, "..."]]:
     mtl = None
     if mesh.visual.kind == "texture" and mesh.visual.uv is not None:
         uv_co = torch.tensor(mesh.visual.uv, dtype=torch.float32)
-        # glTF UVs are (u, v) with v top-down already; they are kept
-        # native. Loaders standardize uv_co to (u, v), top-down image
-        # space: dr.texture samples v top-down (row 0 = image top), and
-        # Splimage.image_sample consumers (e.g. the VerTexturedMesh UV
-        # bake) transpose to their (row, col) convention at the call
-        # site. The v flip here produced vertically mirrored textures.
-        # uv_co = torch.stack([1 - uv_co[:, 1], 1 - uv_co[:, 0]], dim=1)
+        # trimesh flips v on glb import (imported v = 1 - raw v; verified
+        # against the raw TEXCOORD_0 accessor of several assets). Undo
+        # that flip so uv_co is the raw, glTF-spec (u, v) coordinate
+        # (v=0 at the image top). Loaders standardize uv_co to (u, v),
+        # top-down image space: dr.texture samples v top-down (row 0 =
+        # image top), and Splimage.image_sample consumers (e.g. the
+        # VerTexturedMesh UV bake) transpose to their (row, col)
+        # convention at the call site. Without the un-flip every
+        # spec-compliant asset (Blender/Sketchfab exports) samples the
+        # texture vertically mirrored ('cow.glb'/'cow_subdiv.glb' lost
+        # their pink nose and udder).
+        uv_co[:, 1] = 1 - uv_co[:, 1]
         uv_idx = F.clone()
         mtl = Splimage(mesh.visual.material.baseColorTexture, force_rgba=False)._tensor[
             :, :3
